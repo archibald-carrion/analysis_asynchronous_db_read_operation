@@ -1,3 +1,4 @@
+```mermaid
 flowchart TD
     A[Research Objective] --> B[Experimental Design]
     
@@ -58,3 +59,4 @@ flowchart TD
         H2[RQ2: Performance Trade-offs]
         H3[Workload Pattern Analysis]
     end
+```
