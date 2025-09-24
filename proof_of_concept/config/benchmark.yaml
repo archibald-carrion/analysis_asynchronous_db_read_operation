@@ -1,0 +1,24 @@
+benchmark:
+  scale_factor: 1
+  iterations: 3
+  timeout: 300
+  warmup_runs: 1
+  
+  concurrent_queries: [1, 5, 10, 20]
+  
+  methods:
+    - io_uring
+    - background_workers
+    - synchronous
+  
+  metrics:
+    - execution_time
+    - io_wait
+    - cpu_usage
+    - memory_usage
+    - connection_time
+    
+  output:
+    format: ["csv", "json"]
+    directory: "./results"
+    timestamp_format: "%Y%m%d_%H%M%S"

@@ -1,0 +1,20 @@
+postgresql:
+  host: localhost
+  port: 5432
+  database: tpch
+  username: postgres
+  password: password
+  pool_size: 10
+  max_overflow: 20
+  timeout: 30
+  
+  async_settings:
+    io_uring_enabled: true
+    io_uring_entries: 256
+    background_workers: 4
+    max_async_connections: 10
+    
+  performance:
+    work_mem: "256MB"
+    shared_buffers: "1GB"
+    effective_cache_size: "2GB"
