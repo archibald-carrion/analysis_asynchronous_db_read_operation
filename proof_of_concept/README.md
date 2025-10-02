@@ -59,14 +59,14 @@ graph TB
 
 ### 1. Clone the Repository
 ```bash
-git clone <repository-url>
-cd tpch-postgres-async-benchmark
+git clone https://github.com/archibald-carrion/analysis_asynchronous_db_read_operation
+cd proof_of_concept
 ```
 
 ### 2. Create Virtual Environment
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 ```
 
 ### 3. Install Dependencies
