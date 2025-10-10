@@ -4,6 +4,12 @@ set -e
 LOG_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/installation.log"
 PG_VERSION=18
 
+# Parse command line arguments
+LOW_MEMORY=false
+if [[ "$1" == "--low-memory" ]]; then
+    LOW_MEMORY=true
+fi
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
@@ -90,6 +96,10 @@ configure_postgresql() {
     sudo systemctl enable postgresql
     sudo systemctl start postgresql
     
+    # Check PostgreSQL status
+    log "Checking PostgreSQL status..."
+    sudo systemctl status postgresql 2>&1 | tee -a "$LOG_FILE" || true
+    
     # Wait for PostgreSQL to be ready
     log "Waiting for PostgreSQL to be ready..."
     for i in {1..30}; do
@@ -98,7 +108,10 @@ configure_postgresql() {
             break
         fi
         if [ $i -eq 30 ]; then
-            error "PostgreSQL failed to start after 30 seconds"
+            log "PostgreSQL failed to start. Checking logs..."
+            sudo tail -50 /var/log/postgresql/postgresql-${PG_VERSION}-main.log 2>&1 | tee -a "$LOG_FILE" || true
+            sudo journalctl -u postgresql -n 50 --no-pager 2>&1 | tee -a "$LOG_FILE" || true
+            error "PostgreSQL failed to start after 30 seconds. Check logs above."
         fi
         sleep 1
     done
@@ -114,16 +127,64 @@ configure_postgresql() {
         echo "host all all 0.0.0.0/0 md5" | sudo tee -a /etc/postgresql/${PG_VERSION}/main/pg_hba.conf
     fi
     
-    # Increase shared buffers for large database
-    sudo sed -i "s/^#*shared_buffers = .*/shared_buffers = 2GB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
-    sudo sed -i "s/^#*work_mem = .*/work_mem = 256MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
-    sudo sed -i "s/^#*maintenance_work_mem = .*/maintenance_work_mem = 1GB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+    # Get available memory in KB
+    total_mem=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    total_mem_mb=$((total_mem / 1024))
+    
+    log "Detected ${total_mem_mb}MB total memory"
+    
+    # Apply memory settings based on flag or auto-detection
+    if [ "$LOW_MEMORY" = true ]; then
+        # Force low memory settings (for Raspberry Pi)
+        log "LOW MEMORY MODE: Using minimal settings for systems with <2GB RAM"
+        sudo sed -i "s/^#*shared_buffers = .*/shared_buffers = 128MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        sudo sed -i "s/^#*work_mem = .*/work_mem = 4MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        sudo sed -i "s/^#*maintenance_work_mem = .*/maintenance_work_mem = 64MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        sudo sed -i "s/^#*effective_cache_size = .*/effective_cache_size = 256MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        sudo sed -i "s/^#*max_connections = .*/max_connections = 20/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+    else
+        # Auto-detect or use standard settings
+        if [ $total_mem_mb -lt 2048 ]; then
+            # Very low memory system (< 2GB) - Raspberry Pi
+            log "Auto-detected very low memory system (<2GB), using minimal settings"
+            log "TIP: You can force this with --low-memory flag"
+            sudo sed -i "s/^#*shared_buffers = .*/shared_buffers = 128MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*work_mem = .*/work_mem = 4MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*maintenance_work_mem = .*/maintenance_work_mem = 64MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*effective_cache_size = .*/effective_cache_size = 256MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*max_connections = .*/max_connections = 20/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        elif [ $total_mem_mb -lt 4096 ]; then
+            # Low memory system (2-4GB)
+            log "Auto-detected low memory system (2-4GB), using conservative settings"
+            sudo sed -i "s/^#*shared_buffers = .*/shared_buffers = 512MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*work_mem = .*/work_mem = 32MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*maintenance_work_mem = .*/maintenance_work_mem = 256MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*effective_cache_size = .*/effective_cache_size = 1GB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        else
+            # Standard memory system (4GB+)
+            log "Standard memory system detected (4GB+), using optimized settings"
+            sudo sed -i "s/^#*shared_buffers = .*/shared_buffers = 2GB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*work_mem = .*/work_mem = 256MB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*maintenance_work_mem = .*/maintenance_work_mem = 1GB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+            sudo sed -i "s/^#*effective_cache_size = .*/effective_cache_size = 4GB/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
+        fi
+    fi
     
     # Restart PostgreSQL
     sudo systemctl restart postgresql
     
-    # Wait for restart to complete
-    sleep 2
+    # Wait for PostgreSQL to be ready again
+    log "Waiting for PostgreSQL to restart..."
+    for i in {1..30}; do
+        if sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
+            log "PostgreSQL restarted successfully"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            error "PostgreSQL failed to restart after 30 seconds"
+        fi
+        sleep 1
+    done
     
     log "PostgreSQL configured and restarted"
 }
@@ -144,6 +205,13 @@ setup_database_user() {
 main() {
     log "Starting dependency installation"
     
+    if [ "$LOW_MEMORY" = true ]; then
+        log "========================================="
+        log "RUNNING IN LOW MEMORY MODE"
+        log "Suitable for Raspberry Pi and systems <2GB RAM"
+        log "========================================="
+    fi
+    
     # Clean up old repos FIRST before any apt-get update
     cleanup_old_repos
     
@@ -153,6 +221,16 @@ main() {
     setup_database_user
     
     log "All dependencies installed successfully"
+    
+    if [ "$LOW_MEMORY" = true ]; then
+        log ""
+        log "PostgreSQL configured with low-memory settings:"
+        log "  - shared_buffers: 128MB"
+        log "  - work_mem: 4MB"
+        log "  - maintenance_work_mem: 64MB"
+        log "  - effective_cache_size: 256MB"
+        log "  - max_connections: 20"
+    fi
 }
 
 main "$@"
