@@ -11,7 +11,7 @@ LOG_FILE="$SCRIPT_DIR/installation.log"
 DB_NAME="tpch_db"
 DB_USER="tpch_user"
 DB_PASSWORD="tpch_password_123"
-SCALE_FACTOR=40  # 40GB scale factor
+SCALE_FACTOR=1
 PG_VERSION=18
 
 # Colors for output
