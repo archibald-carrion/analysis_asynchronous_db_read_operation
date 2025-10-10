@@ -58,7 +58,11 @@ main() {
     # Step 1: Install dependencies and PostgreSQL
     log "Step 1: Installing dependencies and PostgreSQL ${PG_VERSION}"
     if [[ -f "$SCRIPT_DIR/install_dependencies.sh" ]]; then
-        source "$SCRIPT_DIR/install_dependencies.sh"
+        if [ "$LOW_MEMORY" = true ]; then
+            source "$SCRIPT_DIR/install_dependencies.sh" --low-memory
+        else
+            source "$SCRIPT_DIR/install_dependencies.sh"
+        fi
     else
         warning "install_dependencies.sh not found, assuming dependencies are installed"
     fi
