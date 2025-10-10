@@ -34,10 +34,10 @@ warning() {
     echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a "$LOG_FILE"
 }
 
-# Check if running as database_user
+# Check if running as debian user
 check_user() {
-    if [[ "$(whoami)" != "database_user" ]]; then
-        error "This script must be run as database_user"
+    if [[ "$(whoami)" != "debian" ]]; then
+        error "This script must be run as debian user"
     fi
 }
 
