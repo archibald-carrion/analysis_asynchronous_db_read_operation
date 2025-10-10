@@ -1,9 +1,6 @@
 #!/bin/bash
-
 # PostgreSQL 18 and Dependency Installer for Debian
-
 set -e
-
 LOG_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/installation.log"
 PG_VERSION=18
 
@@ -14,26 +11,6 @@ log() {
 error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" | tee -a "$LOG_FILE"
     exit 1
-}
-
-# Install PostgreSQL 18
-install_postgresql() {
-    log "Installing PostgreSQL ${PG_VERSION}"
-    
-    # Add PostgreSQL official repository
-    sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-    
-    # Import repository signing key
-    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
-    
-    # Update package list
-    sudo apt-get update
-    
-    # Install PostgreSQL
-    sudo apt-get install -y postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} \
-                          postgresql-contrib-${PG_VERSION} postgresql-server-dev-${PG_VERSION}
-    
-    log "PostgreSQL ${PG_VERSION} installed successfully"
 }
 
 # Install system dependencies
@@ -59,9 +36,47 @@ install_dependencies() {
         libssl-dev \
         libjson-c-dev \
         cmake \
-        pkg-config
+        pkg-config \
+        gnupg \
+        lsb-release
     
     log "System dependencies installed"
+}
+
+# Install PostgreSQL 18
+install_postgresql() {
+    log "Installing PostgreSQL ${PG_VERSION}"
+    
+    # Remove old repository file if exists
+    sudo rm -f /etc/apt/sources.list.d/pgdg.list
+    
+    # Add PostgreSQL official repository
+    sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+    
+    # Import repository signing key using multiple methods for compatibility
+    log "Adding PostgreSQL GPG key..."
+    
+    # Method 1: Try direct keyring installation (works with Debian Trixie)
+    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+        sudo gpg --dearmor -o /usr/share/keyrings/postgresql-archive-keyring.gpg
+    
+    # Update repository to use the keyring
+    sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/postgresql-archive-keyring.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+    
+    # Also add to trusted.gpg.d as fallback
+    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+        sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg 2>/dev/null || true
+    
+    log "GPG key added successfully"
+    
+    # Update package list
+    sudo apt-get update
+    
+    # Install PostgreSQL
+    sudo apt-get install -y postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} \
+                          postgresql-contrib-${PG_VERSION} postgresql-server-dev-${PG_VERSION}
+    
+    log "PostgreSQL ${PG_VERSION} installed successfully"
 }
 
 # Configure PostgreSQL
