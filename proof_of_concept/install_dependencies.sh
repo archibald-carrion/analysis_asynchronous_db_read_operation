@@ -90,8 +90,18 @@ configure_postgresql() {
     sudo systemctl enable postgresql
     sudo systemctl start postgresql
     
-    # Wait a moment for PostgreSQL to fully start
-    sleep 2
+    # Wait for PostgreSQL to be ready
+    log "Waiting for PostgreSQL to be ready..."
+    for i in {1..30}; do
+        if sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
+            log "PostgreSQL is ready"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            error "PostgreSQL failed to start after 30 seconds"
+        fi
+        sleep 1
+    done
     
     # Configure PostgreSQL to allow connections
     sudo sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
