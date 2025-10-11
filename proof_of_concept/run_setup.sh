@@ -130,10 +130,20 @@ EOF
     
     log "Creating database: ${DB_NAME}"
     
-    # Drop and recreate database
+    # Get available locales
+    available_locale=$(locale -a | grep -E "^(en_US\.utf8|en_US\.UTF-8|C\.UTF-8|C\.utf8)" | head -1)
+    
+    if [ -z "$available_locale" ]; then
+        log "No UTF-8 locale found, using C locale"
+        available_locale="C"
+    else
+        log "Using locale: $available_locale"
+    fi
+    
+    # Drop and recreate database with available locale
     sudo -u postgres psql <<EOF 2>&1 | tee -a "$LOG_FILE"
 DROP DATABASE IF EXISTS ${DB_NAME};
-CREATE DATABASE ${DB_NAME} WITH OWNER = ${DB_USER} ENCODING = 'UTF8' LC_COLLATE = 'en_US.UTF-8' LC_CTYPE = 'en_US.UTF-8' TEMPLATE = template0;
+CREATE DATABASE ${DB_NAME} WITH OWNER = ${DB_USER} ENCODING = 'UTF8' LC_COLLATE = '${available_locale}' LC_CTYPE = '${available_locale}' TEMPLATE = template0;
 EOF
     
     log "Granting permissions"
@@ -154,6 +164,10 @@ setup_tpch_tools() {
         # Clone from GitHub
         git clone https://github.com/electrum/tpch-dbgen.git .
         
+        # Fix the build issue - add missing include
+        log "Patching TPC-H dbgen for modern compilers..."
+        sed -i '1i#include <string.h>' bm_utils.c
+        
         # Build dbgen
         log "Building TPC-H dbgen tool..."
         make -j$(nproc) 2>&1 | tee -a "$LOG_FILE"
@@ -161,8 +175,17 @@ setup_tpch_tools() {
         if [[ ! -f "dbgen" ]]; then
             error "Failed to build dbgen tool"
         fi
+        
+        log "TPC-H tools built successfully"
     else
         log "TPC-H tools already exist, skipping download"
+        cd "$tpch_dir"
+        if [[ ! -f "dbgen" ]]; then
+            log "dbgen not found, rebuilding..."
+            sed -i '1i#include <string.h>' bm_utils.c 2>/dev/null || true
+            make clean
+            make -j$(nproc) 2>&1 | tee -a "$LOG_FILE"
+        fi
     fi
 }
 
