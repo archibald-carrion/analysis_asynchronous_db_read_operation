@@ -200,6 +200,11 @@ generate_and_load_data() {
     log "Generating TPC-H data with scale factor ${SCALE_FACTOR}..."
     ./dbgen -s "$SCALE_FACTOR" -f 2>&1 | tee -a "$LOG_FILE"
     
+    # Verify data files were generated
+    if [[ ! -f "nation.tbl" ]]; then
+        error "Data generation failed - nation.tbl not found"
+    fi
+    
     # Create table schema in PostgreSQL
     log "Creating TPC-H schema..."
     PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" <<EOF 2>&1 | tee -a "$LOG_FILE"
@@ -290,13 +295,13 @@ CREATE TABLE lineitem (
 );
 EOF
 
-    # Load data using PostgreSQL COPY command
+    # Load data using PostgreSQL \copy (client-side COPY)
     log "Loading data into PostgreSQL..."
     
     # Set up password for psql
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Load each table
+    # Load each table using \copy which runs client-side
     for table in nation region part supplier partsupp customer orders lineitem; do
         log "Loading table: $table"
         data_file="${tpch_dir}/${table}.tbl"
@@ -305,8 +310,16 @@ EOF
             error "Data file not found: $data_file"
         fi
         
+        # Use \copy (client-side) instead of COPY (server-side)
         PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
-            -c "COPY $table FROM '$data_file' WITH (DELIMITER '|', FORMAT csv);" 2>&1 | tee -a "$LOG_FILE"
+            -c "\copy $table FROM '$data_file' WITH (DELIMITER '|', FORMAT csv);" 2>&1 | tee -a "$LOG_FILE"
+        
+        # Check if the copy succeeded
+        if [ $? -ne 0 ]; then
+            error "Failed to load data into table: $table"
+        fi
+        
+        log "Successfully loaded table: $table"
     done
     
     log "Data loading completed"
