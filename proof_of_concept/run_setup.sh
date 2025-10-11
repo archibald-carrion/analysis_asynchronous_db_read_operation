@@ -360,8 +360,17 @@ EOF
     # Fix file permissions first
     chmod 644 *.tbl 2>/dev/null || true
     
+    # Pre-process .tbl files to remove trailing delimiters
+    log "Pre-processing .tbl files to remove trailing delimiters..."
+    for tbl_file in *.tbl; do
+        if [[ -f "$tbl_file" ]]; then
+            # Remove trailing pipe character from each line
+            sed -i 's/|$//' "$tbl_file"
+            log "Processed: $tbl_file"
+        fi
+    done
+    
     # Load each table using \copy which runs client-side
-    # TPC-H .tbl files are pipe-delimited with a trailing delimiter
     for table in nation region part supplier partsupp customer orders lineitem; do
         log "Loading table: $table"
         data_file="${tpch_dir}/${table}.tbl"
@@ -370,9 +379,9 @@ EOF
             error "Data file not found: $data_file"
         fi
         
-        # Use \copy with proper TPC-H format (pipe delimiter, no header, trailing delimiter)
+        # Use \copy with proper TPC-H format (pipe delimiter, no header)
         PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" <<EOF 2>&1 | tee -a "$LOG_FILE"
-\copy $table FROM '$data_file' WITH (DELIMITER '|', FORMAT text);
+\\copy $table FROM '$data_file' WITH (DELIMITER '|', FORMAT csv);
 EOF
         
         # Check if the copy succeeded by counting rows
