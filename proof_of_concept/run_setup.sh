@@ -6,6 +6,8 @@
 # Usage:
 #   ./run_test.sh              # Normal mode (auto-detects memory)
 #   ./run_test.sh --low-memory # Force low-memory mode for Raspberry Pi
+#   ./run_test.sh --clean      # Clean up all data and tools before running
+#   ./run_test.sh --low-memory --clean  # Combine flags
 
 set -e  # Exit on any error
 
@@ -20,10 +22,21 @@ PG_VERSION=18
 
 # Parse command line arguments
 LOW_MEMORY=false
-if [[ "$1" == "--low-memory" ]]; then
-    LOW_MEMORY=true
-    shift
-fi
+CLEAN=false
+for arg in "$@"; do
+    case $arg in
+        --low-memory)
+            LOW_MEMORY=true
+            shift
+            ;;
+        --clean)
+            CLEAN=true
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -60,6 +73,36 @@ wait_for_postgres() {
     done
 }
 
+# Clean up function
+cleanup_files() {
+    log "Cleaning up old TPC-H files and data..."
+    
+    # Remove generated data files (.tbl files are large!)
+    if [[ -d "$SCRIPT_DIR/tpch-tools" ]]; then
+        log "Removing generated .tbl data files..."
+        rm -f "$SCRIPT_DIR/tpch-tools"/*.tbl
+        rm -f "$SCRIPT_DIR/tpch-tools"/*.tbl.*
+        
+        # Show space saved
+        log "Data files cleaned"
+    fi
+    
+    # Remove data directory if it exists
+    if [[ -d "$SCRIPT_DIR/tpch-data" ]]; then
+        log "Removing tpch-data directory..."
+        rm -rf "$SCRIPT_DIR/tpch-data"
+    fi
+    
+    # Optionally remove entire tpch-tools directory (including source and binaries)
+    if [[ "$CLEAN" == "true" ]]; then
+        log "Full clean requested - removing tpch-tools directory..."
+        rm -rf "$SCRIPT_DIR/tpch-tools"
+        log "TPC-H tools removed (will be re-downloaded)"
+    fi
+    
+    log "Cleanup completed"
+}
+
 # Main execution function
 main() {
     log "Starting TPC-H database creation process..."
@@ -71,6 +114,19 @@ main() {
         log "RUNNING IN LOW MEMORY MODE"
         log "Suitable for Raspberry Pi and systems <2GB RAM"
         log "========================================="
+    fi
+    
+    # Clean up old files first if requested
+    if [ "$CLEAN" = true ]; then
+        log "========================================="
+        log "CLEAN MODE: Removing old files"
+        log "========================================="
+        cleanup_files
+    else
+        # Always clean .tbl files to save space (they'll be regenerated)
+        log "Cleaning up old .tbl data files to save space..."
+        rm -f "$SCRIPT_DIR/tpch-tools"/*.tbl 2>/dev/null || true
+        rm -f "$SCRIPT_DIR/tpch-tools"/*.tbl.* 2>/dev/null || true
     fi
     
     # Step 1: Install dependencies and PostgreSQL
@@ -301,7 +357,11 @@ EOF
     # Set up password for psql
     export PGPASSWORD="$DB_PASSWORD"
     
+    # Fix file permissions first
+    chmod 644 *.tbl 2>/dev/null || true
+    
     # Load each table using \copy which runs client-side
+    # TPC-H .tbl files are pipe-delimited with a trailing delimiter
     for table in nation region part supplier partsupp customer orders lineitem; do
         log "Loading table: $table"
         data_file="${tpch_dir}/${table}.tbl"
@@ -310,16 +370,19 @@ EOF
             error "Data file not found: $data_file"
         fi
         
-        # Use \copy (client-side) instead of COPY (server-side)
-        PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
-            -c "\copy $table FROM '$data_file' WITH (DELIMITER '|', FORMAT csv);" 2>&1 | tee -a "$LOG_FILE"
+        # Use \copy with proper TPC-H format (pipe delimiter, no header, trailing delimiter)
+        PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" <<EOF 2>&1 | tee -a "$LOG_FILE"
+\copy $table FROM '$data_file' WITH (DELIMITER '|', FORMAT text);
+EOF
         
-        # Check if the copy succeeded
-        if [ $? -ne 0 ]; then
-            error "Failed to load data into table: $table"
+        # Check if the copy succeeded by counting rows
+        row_count=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -t -c "SELECT COUNT(*) FROM $table;" | tr -d ' ')
+        
+        if [ "$row_count" -gt 0 ]; then
+            log "Successfully loaded table: $table ($row_count rows)"
+        else
+            error "Failed to load data into table: $table (0 rows loaded)"
         fi
-        
-        log "Successfully loaded table: $table"
     done
     
     log "Data loading completed"
