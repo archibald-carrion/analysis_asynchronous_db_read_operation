@@ -92,29 +92,13 @@ install_postgresql() {
 configure_postgresql() {
     log "Configuring PostgreSQL"
     
-    # Start PostgreSQL service
+    # Enable PostgreSQL service but don't start yet
     sudo systemctl enable postgresql
-    sudo systemctl start postgresql
     
-    # Check PostgreSQL status
-    log "Checking PostgreSQL status..."
-    sudo systemctl status postgresql 2>&1 | tee -a "$LOG_FILE" || true
-    
-    # Wait for PostgreSQL to be ready
-    log "Waiting for PostgreSQL to be ready..."
-    for i in {1..30}; do
-        if sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
-            log "PostgreSQL is ready"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            log "PostgreSQL failed to start. Checking logs..."
-            sudo tail -50 /var/log/postgresql/postgresql-${PG_VERSION}-main.log 2>&1 | tee -a "$LOG_FILE" || true
-            sudo journalctl -u postgresql -n 50 --no-pager 2>&1 | tee -a "$LOG_FILE" || true
-            error "PostgreSQL failed to start after 30 seconds. Check logs above."
-        fi
-        sleep 1
-    done
+    # Stop PostgreSQL if it's running (from installation)
+    log "Stopping PostgreSQL to apply configuration..."
+    sudo systemctl stop postgresql 2>/dev/null || true
+    sleep 2
     
     # Configure PostgreSQL to allow connections
     sudo sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" /etc/postgresql/${PG_VERSION}/main/postgresql.conf
@@ -170,23 +154,31 @@ configure_postgresql() {
         fi
     fi
     
-    # Restart PostgreSQL
-    sudo systemctl restart postgresql
+    # Restart PostgreSQL with new configuration
+    log "Starting PostgreSQL with new configuration..."
+    sudo systemctl start postgresql
     
-    # Wait for PostgreSQL to be ready again
-    log "Waiting for PostgreSQL to restart..."
+    # Check PostgreSQL status
+    log "Checking PostgreSQL status..."
+    sudo systemctl status postgresql 2>&1 | tee -a "$LOG_FILE" || true
+    
+    # Wait for PostgreSQL to be ready
+    log "Waiting for PostgreSQL to be ready..."
     for i in {1..30}; do
         if sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
-            log "PostgreSQL restarted successfully"
+            log "PostgreSQL is ready and accepting connections"
             break
         fi
         if [ $i -eq 30 ]; then
-            error "PostgreSQL failed to restart after 30 seconds"
+            log "PostgreSQL failed to start. Checking logs..."
+            sudo tail -50 /var/log/postgresql/postgresql-${PG_VERSION}-main.log 2>&1 | tee -a "$LOG_FILE" || true
+            sudo journalctl -u postgresql -n 50 --no-pager 2>&1 | tee -a "$LOG_FILE" || true
+            error "PostgreSQL failed to start after 30 seconds. Check logs above."
         fi
         sleep 1
     done
     
-    log "PostgreSQL configured and restarted"
+    log "PostgreSQL configured and started successfully"
 }
 
 # Set database user password

@@ -2,6 +2,10 @@
 
 # TPC-H Database Creation Script
 # Creates a TPC-H compliant PostgreSQL database
+#
+# Usage:
+#   ./run_test.sh              # Normal mode (auto-detects memory)
+#   ./run_test.sh --low-memory # Force low-memory mode for Raspberry Pi
 
 set -e  # Exit on any error
 
@@ -13,6 +17,13 @@ DB_USER="tpch_user"
 DB_PASSWORD="tpch_password_123"
 SCALE_FACTOR=1
 PG_VERSION=18
+
+# Parse command line arguments
+LOW_MEMORY=false
+if [[ "$1" == "--low-memory" ]]; then
+    LOW_MEMORY=true
+    shift
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -54,6 +65,13 @@ main() {
     log "Starting TPC-H database creation process..."
     log "Scale Factor: ${SCALE_FACTOR}GB"
     log "PostgreSQL Version: ${PG_VERSION}"
+    
+    if [ "$LOW_MEMORY" = true ]; then
+        log "========================================="
+        log "RUNNING IN LOW MEMORY MODE"
+        log "Suitable for Raspberry Pi and systems <2GB RAM"
+        log "========================================="
+    fi
     
     # Step 1: Install dependencies and PostgreSQL
     log "Step 1: Installing dependencies and PostgreSQL ${PG_VERSION}"
