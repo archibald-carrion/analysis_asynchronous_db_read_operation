@@ -840,13 +840,9 @@ main() {
     # Initialize CSV file
     initialize_csv
     
-    # Step 1: Create queries if they don't exist
-    if [[ ! -d "$SCRIPT_DIR/tpch_queries" ]]; then
-        log "Step 1: Creating TPC-H queries"
-        create_queries
-    else
-        log "Step 1: TPC-H queries already exist"
-    fi
+    # Step 1: Create queries (always recreate to ensure all 22 exist)
+    log "Step 1: Creating/updating TPC-H queries"
+    create_queries
     
     # Step 2: Generate random query order
     log "Step 2: Generating random query execution order"
