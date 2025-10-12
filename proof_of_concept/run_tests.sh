@@ -794,34 +794,49 @@ execute_query() {
     # Set up password for psql
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Execute query with timing
-    local start_time=$(date +%s.%N)
-    
-    if psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
+    # Execute query with TIMING ON to get accurate server-side timing
+    # Redirect output to /dev/null to avoid I/O overhead in timing
+    local timing_output=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
+        -c "\timing on" \
         -f "$query_file" \
-        > "$result_file" 2>>"$LOG_FILE"; then
+        2>&1 | grep "Time:" | tail -1)
+    
+    local exit_code=$?
+    
+    # Extract execution time in milliseconds from PostgreSQL's timing output
+    if [[ $exit_code -eq 0 && ! -z "$timing_output" ]]; then
+        # Parse "Time: XXX.XXX ms" format
+        local execution_time_ms=$(echo "$timing_output" | grep -oP '\d+\.\d+(?= ms)')
         
-        local end_time=$(date +%s.%N)
-        local execution_time=$(echo "$end_time - $start_time" | bc)
-        
-        # Count rows in result (excluding header)
-        local row_count=$(grep -c '^' "$result_file" || echo "0")
-        row_count=$((row_count - 2))  # Subtract header lines
-        if [ $row_count -lt 0 ]; then
-            row_count=0
+        if [[ ! -z "$execution_time_ms" ]]; then
+            # Convert milliseconds to seconds
+            local execution_time=$(echo "scale=6; $execution_time_ms / 1000" | bc)
+            
+            # Now save results to file (outside timing measurement)
+            PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
+                -f "$query_file" \
+                > "$result_file" 2>>"$LOG_FILE"
+            
+            # Count rows in result (excluding header)
+            local row_count=$(grep -c '^' "$result_file" 2>/dev/null || echo "0")
+            row_count=$((row_count - 2))  # Subtract header lines
+            if [ $row_count -lt 0 ]; then
+                row_count=0
+            fi
+            
+            # Write to CSV
+            echo "${query_num},${iteration},${execution_order},${execution_time},SUCCESS,${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+            
+            info "Q$query_num completed in ${execution_time} seconds ($row_count rows)"
+            return 0
+        else
+            warning "Could not parse timing from query Q$query_num"
+            echo "${query_num},${iteration},${execution_order},0,ERROR,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+            return 1
         fi
-        
-        # Write to CSV
-        echo "${query_num},${iteration},${execution_order},${execution_time},SUCCESS,${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
-        
-        info "Q$query_num completed in ${execution_time} seconds ($row_count rows)"
-        return 0
     else
-        local end_time=$(date +%s.%N)
-        local execution_time=$(echo "$end_time - $start_time" | bc)
-        
         warning "Query Q$query_num encountered errors"
-        echo "${query_num},${iteration},${execution_order},${execution_time},ERROR,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+        echo "${query_num},${iteration},${execution_order},0,ERROR,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
         return 1
     fi
 }
