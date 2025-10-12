@@ -1,0 +1,42 @@
+TPC-H Query Execution Summary
+Generated: Sun 12 Oct 23:52:42 BST 2025
+Database: tpch_db
+User: tpch_user
+Iterations: 30
+
+CSV Output: /home/debian/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_results.csv
+
+Execution Statistics:
+  Total Queries Executed: 660
+  Successful: 660
+  Failed: 0
+0
+
+Total Execution Time: 352.474 seconds
+Average Time per Query: .53 seconds
+
+Individual Query Performance (from CSV):
+Query | Avg Time (s) | Status
+------|--------------|--------
+Q1    | 1.679 | SUCCESS
+Q2    | 0.214 | SUCCESS
+Q3    | 0.392 | SUCCESS
+Q4    | 0.337 | SUCCESS
+Q5    | 0.224 | SUCCESS
+Q6    | 0.192 | SUCCESS
+Q7    | 0.424 | SUCCESS
+Q8    | 0.329 | SUCCESS
+Q9    | 0.912 | SUCCESS
+Q10    | 0.452 | SUCCESS
+Q11    | 0.208 | SUCCESS
+Q12    | 0.588 | SUCCESS
+Q13    | 0.719 | SUCCESS
+Q14    | 0.145 | SUCCESS
+Q15    | 0.188 | SUCCESS
+Q16    | 0.341 | SUCCESS
+Q17    | 0.606 | SUCCESS
+Q18    | 2.655 | SUCCESS
+Q19    | 0.074 | SUCCESS
+Q20    | 0.395 | SUCCESS
+Q21    | 0.542 | SUCCESS
+Q22    | 0.134 | SUCCESS

@@ -1,0 +1,15 @@
+
+# TPC-H Generated Data Files (LARGE - do not commit)
+*.tbl
+*.tbl.*
+
+# TPC-H Tools Directory (can be regenerated)
+tpch-tools/
+tpch-data/
+
+# Query Results and Logs
+query_results/
+*.log
+installation.log
+query_execution.log
+
