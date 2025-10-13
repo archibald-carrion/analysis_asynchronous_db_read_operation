@@ -1,0 +1,8 @@
+Timing is on.
+ l_shipmode | high_line_count | low_line_count 
+------------+-----------------+----------------
+ MAIL       |             647 |            945
+ SHIP       |             620 |            943
+(2 rows)
+
+Time: 4191.537 ms (00:04.192)
