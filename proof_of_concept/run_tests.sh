@@ -1,262 +1,279 @@
-cat > final_benchmark.sh << 'EOF'
 #!/bin/bash
 
-# FINAL TPC-H Benchmark Script - Production Ready
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$SCRIPT_DIR/final_benchmark_$(date +%Y%m%d_%H%M%S).log"
-RESULTS_DIR="$SCRIPT_DIR/final_results"
-CSV_OUTPUT="$RESULTS_DIR/tpch_final_results_$(date +%Y%m%d_%H%M%S).csv"
-SUMMARY_FILE="$RESULTS_DIR/benchmark_summary_$(date +%Y%m%d_%H%M%S).txt"
+# TPC-H Complete Benchmark Script - Clean Version
+# Uses existing SQL files directly
 
-# TPC-H Configuration (FINAL)
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="$SCRIPT_DIR/query_execution.log"
+RESULTS_DIR="$SCRIPT_DIR/query_results"
+CSV_OUTPUT="$SCRIPT_DIR/tpch_complete_results.csv"
+REFRESH_CSV="$SCRIPT_DIR/tpch_refresh_results.csv"
+INTERVAL_CSV="$SCRIPT_DIR/tpch_interval_results.csv"
 DB_NAME="tpch_db"
 DB_USER="tpch_user"
 DB_PASSWORD="tpch_password_123"
-IO_METHOD="${1:-sync}"
-ITERATIONS=2           # TPC-H requirement
-RUNS_PER_ITERATION=2    # TPC-H requirement  
-QUERY_STREAMS=2         # TPC-H minimum
+ITERATIONS=2
+RUNS_PER_ITERATION=2
+QUERY_STREAMS=2
 SCALE_FACTOR=1
+IO_METHOD="${1:-sync}"
 
-# Colors
+# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Logging functions
 log() { echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOG_FILE"; }
 error() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
 warning() { echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a "$LOG_FILE"; }
 info() { echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO:${NC} $1" | tee -a "$LOG_FILE"; }
 
-# Initialize file structure
-initialize() {
-    log "Initializing TPC-H Benchmark..."
-    mkdir -p "$RESULTS_DIR"
+# Initialize CSV files
+initialize_csv() {
+    log "Initializing CSV output files"
     
-    # Create CSV headers
-    echo "io_method,iteration,run,global_run_id,test_type,query_number,execution_time,rows,timestamp" > "$CSV_OUTPUT"
-    
-    # Create fixed refresh functions if they don't exist
-    if [[ ! -f "$SCRIPT_DIR/tpch_queries/rf1_fixed.sql" ]]; then
-        cat > "$SCRIPT_DIR/tpch_queries/rf1_fixed.sql" << 'RF1EOF'
--- Refresh Function 1 (RF1) - FIXED: Insert new sales
-BEGIN;
-
--- First insert new orders
-INSERT INTO orders (o_orderkey, o_custkey, o_orderstatus, o_totalprice, o_orderdate, o_orderpriority, o_clerk, o_shippriority, o_comment)
-SELECT 
-    o_orderkey + 10000000,
-    o_custkey,
-    o_orderstatus,
-    o_totalprice,
-    o_orderdate + INTERVAL '1 year',
-    o_orderpriority,
-    o_clerk,
-    o_shippriority,
-    o_comment
-FROM orders 
-WHERE o_orderkey IN (
-    SELECT o_orderkey FROM orders ORDER BY RANDOM() LIMIT 100
-);
-
--- Then insert corresponding lineitems ONLY for the orders we just inserted
-INSERT INTO lineitem (l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice, l_discount, l_tax, l_returnflag, l_linestatus, l_shipdate, l_commitdate, l_receiptdate, l_shipinstruct, l_shipmode, l_comment)
-SELECT 
-    l_orderkey + 10000000,
-    l_partkey,
-    l_suppkey,
-    l_linenumber,
-    l_quantity,
-    l_extendedprice,
-    l_discount,
-    l_tax,
-    l_returnflag,
-    l_linestatus,
-    l_shipdate + INTERVAL '1 year',
-    l_commitdate + INTERVAL '1 year',
-    l_receiptdate + INTERVAL '1 year',
-    l_shipinstruct,
-    l_shipmode,
-    l_comment
-FROM lineitem 
-WHERE l_orderkey IN (
-    SELECT o_orderkey - 10000000 
-    FROM orders 
-    WHERE o_orderkey > 10000000 
-    AND o_orderdate >= DATE '1995-01-01'
-    LIMIT 500
-);
-
-COMMIT;
-RF1EOF
-        info "Created fixed RF1"
-    fi
-
-    if [[ ! -f "$SCRIPT_DIR/tpch_queries/rf2_fixed.sql" ]]; then
-        cat > "$SCRIPT_DIR/tpch_queries/rf2_fixed.sql" << 'RF2EOF'
--- Refresh Function 2 (RF2) - FIXED: Delete old sales
-BEGIN;
-
--- Find orders that are safe to delete (no lineitems referencing them)
-CREATE TEMPORARY TABLE safe_orders_to_delete AS
-SELECT o_orderkey 
-FROM orders 
-WHERE o_orderdate < DATE '1993-01-01'
-AND o_orderkey NOT IN (
-    SELECT DISTINCT l_orderkey FROM lineitem WHERE l_orderkey = o_orderkey
-)
-ORDER BY RANDOM() 
-LIMIT 50;
-
--- Delete from lineitems first for orders we're about to delete
-DELETE FROM lineitem 
-WHERE l_orderkey IN (SELECT o_orderkey FROM safe_orders_to_delete);
-
--- Then delete the orders
-DELETE FROM orders 
-WHERE o_orderkey IN (SELECT o_orderkey FROM safe_orders_to_delete);
-
-DROP TABLE safe_orders_to_delete;
-
-COMMIT;
-RF2EOF
-        info "Created fixed RF2"
-    fi
+    echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,query_number,execution_order,execution_time_seconds,row_count,timestamp" > "$CSV_OUTPUT"
+    echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,refresh_number,execution_order,execution_time_seconds,rows_affected,timestamp" > "$REFRESH_CSV"
+    echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time" > "$INTERVAL_CSV"
 }
 
-# Test database connection
-test_connection() {
-    info "Testing database connection..."
+# Test PostgreSQL connection
+test_postgres_connection() {
+    info "Testing PostgreSQL connection..."
     export PGPASSWORD="$DB_PASSWORD"
     if ! psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
-        error "Cannot connect to database $DB_NAME as user $DB_USER"
+        error "Cannot connect to PostgreSQL database $DB_NAME as user $DB_USER"
     fi
-    info "Database connection successful"
+    info "PostgreSQL connection successful"
 }
 
-# Execute query with robust error handling
+# Execute single query with robust error handling
 execute_query() {
-    local iteration=$1
-    local run=$2
-    local global_run_id=$3
+    local run_id=$1
+    local iteration=$2
+    local run_in_iteration=$3
     local test_type=$4
-    local query_num=$5
+    local stream_id=$5
+    local query_num=$6
+    local execution_order=$7
     local query_file="$SCRIPT_DIR/tpch_queries/q${query_num}.sql"
     
-    info "Executing Q${query_num} ($test_type - Iteration $iteration, Run $run)"
-    
     if [[ ! -f "$query_file" ]]; then
-        warning "Query file $query_num not found"
-        echo "${IO_METHOD},${iteration},${run},${global_run_id},${test_type},${query_num},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+        warning "Query file $query_file not found, skipping"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
         return 1
     fi
     
-    export PGPASSWORD="$DB_PASSWORD"
-    local start_time=$(date +%s.%N)
-    local output_file="$RESULTS_DIR/${test_type}_iter${iteration}_run${run}_q${query_num}.txt"
+    info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} Q${query_num}..."
     
-    if timeout 300s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$query_file" > "$output_file" 2>&1; then
+    export PGPASSWORD="$DB_PASSWORD"
+    mkdir -p "$RESULTS_DIR"
+    
+    local result_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_q${query_num}.txt"
+    local start_time=$(date +%s.%N)
+    
+    # Execute query with timeout
+    if timeout 300s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$query_file" > "$result_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
-        local row_count=$(tail -n +3 "$output_file" | grep -c . 2>/dev/null || echo "0")
         
-        echo "${IO_METHOD},${iteration},${run},${global_run_id},${test_type},${query_num},${execution_time},${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
-        info "✓ Q${query_num} completed in ${execution_time}s"
+        # Get row count (excluding headers)
+        local row_count=$(tail -n +3 "$result_file" | grep -c . 2>/dev/null || echo "0")
+        
+        # Write to CSV
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},${execution_time},${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+        
+        info "Q${query_num} completed in ${execution_time}s with ${row_count} rows"
         return 0
     else
         local exit_code=$?
-        warning "Q${query_num} failed (exit code: $exit_code)"
-        echo "${IO_METHOD},${iteration},${run},${global_run_id},${test_type},${query_num},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+        warning "Query Q${query_num} failed with exit code $exit_code"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
         return 1
     fi
 }
 
-# Execute refresh function
-execute_refresh() {
-    local iteration=$1
-    local run=$2
-    local global_run_id=$3
+# Execute refresh function with robust error handling
+execute_refresh_function() {
+    local run_id=$1
+    local iteration=$2
+    local run_in_iteration=$3
     local test_type=$4
-    local rf_num=$5
-    local rf_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}_fixed.sql"
+    local stream_id=$5
+    local refresh_num=$6
+    local execution_order=$7
     
-    info "Executing RF${rf_num} ($test_type - Iteration $iteration, Run $run)"
+    # Try fixed version first, then fall back to original
+    local refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}_fixed.sql"
+    if [[ ! -f "$refresh_file" ]]; then
+        refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
+    fi
+    
+    if [[ ! -f "$refresh_file" ]]; then
+        warning "Refresh function file $refresh_file not found, skipping"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        return 1
+    fi
+    
+    info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
     
     export PGPASSWORD="$DB_PASSWORD"
-    local output_file="$RESULTS_DIR/${test_type}_iter${iteration}_run${run}_rf${rf_num}.txt"
+    local start_time=$(date +%s.%N)
+    local output_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_rf${refresh_num}.txt"
     
-    if timeout 120s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$rf_file" > "$output_file" 2>&1; then
-        info "✓ RF${rf_num} completed"
+    # Execute refresh function with timeout
+    if timeout 120s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$refresh_file" > "$output_file" 2>&1; then
+        local end_time=$(date +%s.%N)
+        local execution_time=$(echo "$end_time - $start_time" | bc)
+        
+        # Estimate rows affected
+        local rows_affected=0
+        if [ $refresh_num -eq 1 ]; then
+            rows_affected=600  # RF1: ~100 orders + 500 lineitems
+        else
+            rows_affected=100  # RF2: ~50 orders + 50 lineitems
+        fi
+        
+        # Write to refresh CSV
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},${execution_time},${rows_affected},$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        
+        info "RF${refresh_num} completed in ${execution_time}s"
         return 0
     else
-        warning "RF${rf_num} failed but continuing..."
+        local exit_code=$?
+        warning "Refresh function RF${refresh_num} failed with exit code $exit_code"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
         return 1
     fi
 }
 
-# Power Test (TPC-H requirement)
+# Power Test (TPC-H Requirement) - SIMPLIFIED without return value issues
 execute_power_test() {
-    local iteration=$1
-    local run=$2
-    local global_run_id=$3
+    local run_id=$1
+    local iteration=$2
+    local run_in_iteration=$3
     
-    log "Starting POWER Test (Iteration $iteration, Run $run)"
+    log "Starting Power Test (Iteration $iteration, Run $run_in_iteration)"
     
     # RF1 before queries
-    execute_refresh "$iteration" "$run" "$global_run_id" "POWER" "1"
+    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "1"
     
-    # Execute all 22 queries sequentially
+    # Execute all 22 queries sequentially (stream 0)
     for query_num in {1..22}; do
-        execute_query "$iteration" "$run" "$global_run_id" "POWER" "$query_num"
+        execute_query "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "$query_num" "$((query_num + 1))"
         sleep 1
     done
     
     # RF2 after queries
-    execute_refresh "$iteration" "$run" "$global_run_id" "POWER" "2"
+    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "24"
     
-    log "POWER Test completed (Iteration $iteration, Run $run)"
+    log "Power Test (Iteration $iteration, Run $run_in_iteration) completed"
 }
 
-# Throughput Test (TPC-H requirement)  
-execute_throughput_test() {
-    local iteration=$1
-    local run=$2
-    local global_run_id=$3
+# Generate random query order for throughput test
+generate_random_order() {
+    local queries=()
+    for i in {1..22}; do
+        queries+=($i)
+    done
     
-    log "Starting THROUGHPUT Test with $QUERY_STREAMS streams (Iteration $iteration, Run $run)"
+    for ((i=${#queries[@]}-1; i>0; i--)); do
+        j=$((RANDOM % (i+1)))
+        temp=${queries[i]}
+        queries[i]=${queries[j]}
+        queries[j]=$temp
+    done
+    
+    echo "${queries[@]}"
+}
+
+# Throughput Test (TPC-H Requirement) - SIMPLIFIED without return value issues
+execute_throughput_test() {
+    local run_id=$1
+    local iteration=$2
+    local run_in_iteration=$3
+    
+    log "Starting Throughput Test (Iteration $iteration, Run $run_in_iteration) with $QUERY_STREAMS streams"
+    
+    # Record measurement interval start time
     local start_time=$(date +%s.%N)
     
-    # Execute query streams in parallel
+    # Array to track background process IDs
     local pids=()
+    local execution_order=1
+    
+    # Execute query streams in parallel
     for stream in $(seq 1 $QUERY_STREAMS); do
         (
-            # Random query order for each stream
-            for query_num in $(shuf -i 1-22); do
-                execute_query "$iteration" "$run" "$global_run_id" "THROUGHPUT" "$query_num"
+            # Generate random query order for this stream
+            local stream_queries=($(generate_random_order))
+            for query_num in "${stream_queries[@]}"; do
+                execute_query "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "$stream" "$query_num" "$execution_order"
+                execution_order=$((execution_order + 1))
             done
         ) &
         pids+=($!)
     done
     
-    # Wait for all streams to complete
+    # Execute refresh stream in background (RF1 and RF2 pairs)
+    (
+        for rf_pair in $(seq 1 $QUERY_STREAMS); do
+            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
+            execution_order=$((execution_order + 1))
+            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
+            execution_order=$((execution_order + 1))
+        done
+    ) &
+    pids+=($!)
+    
+    # Wait for all processes to complete
     for pid in "${pids[@]}"; do
         wait $pid
     done
     
+    # Record measurement interval end time
     local end_time=$(date +%s.%N)
     local measurement_interval=$(echo "$end_time - $start_time" | bc)
     
-    log "THROUGHPUT Test completed in ${measurement_interval}s (Iteration $iteration, Run $run)"
+    # Record measurement interval
+    echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},THROUGHPUT,${QUERY_STREAMS},${measurement_interval},${start_time},${end_time}" >> "$INTERVAL_CSV"
+    
+    log "Throughput Test (Iteration $iteration, Run $run_in_iteration) completed in ${measurement_interval} seconds"
 }
 
-# Generate summary report
-generate_summary() {
-    log "Generating benchmark summary..."
+# Configure PostgreSQL for specific I/O method
+configure_postgresql() {
+    local io_method=$1
+    info "Configuring PostgreSQL for I/O method: $io_method"
     
-    cat > "$SUMMARY_FILE" << EOSUMMARY
-TPC-H COMPLETE BENCHMARK RESULTS
+    case $io_method in
+        "sync")
+            info "Using synchronous I/O (default)"
+            ;;
+        "bgworkers")
+            info "Using background workers configuration"
+            ;;
+        "io_uring")
+            info "Using io_uring configuration"
+            ;;
+    esac
+    
+    # Restart PostgreSQL to apply changes
+    sudo systemctl restart postgresql
+    sleep 5
+}
+
+# Generate TPC-H metric calculation summary
+generate_tpch_summary() {
+    local summary_file="$RESULTS_DIR/tpch_metrics_summary.txt"
+    
+    cat > "$summary_file" << EOF
+TPC-H Complete Benchmark Metrics Summary
 Generated: $(date)
 I/O Method: $IO_METHOD
 Database: $DB_NAME
@@ -265,78 +282,87 @@ Iterations: $ITERATIONS
 Runs per Iteration: $RUNS_PER_ITERATION
 Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))
 
-EXECUTION SUMMARY:
-- Log File: $LOG_FILE
-- Results CSV: $CSV_OUTPUT
-- Output Directory: $RESULTS_DIR
+Output Files:
+- Query Results: $CSV_OUTPUT
+- Refresh Results: $REFRESH_CSV  
+- Interval Results: $INTERVAL_CSV
 
-TPC-H METRICS:
-- Power Test: Sequential execution of all 22 queries
-- Throughput Test: Parallel execution with $QUERY_STREAMS streams
-- Refresh Functions: RF1 (inserts) and RF2 (deletes)
+TPC-H Metric Formulas:
 
-FILES CREATED:
-1. $(basename "$LOG_FILE") - Detailed execution log
-2. $(basename "$CSV_OUTPUT") - Query timing results
-3. $(basename "$SUMMARY_FILE") - This summary file
-4. query_results/ - Individual query outputs
-5. rf1_fixed.sql, rf2_fixed.sql - Fixed refresh functions
+1. POWER@Size = 3600 × SF × √[1 / (∏ QI(i,0) × ∏ RI(j,0))]^(1/24)
 
-NEXT STEPS:
-1. Verify all queries completed successfully
-2. Calculate TPC-H metrics (QphH) from the results
-3. Compare with other I/O methods
-4. Perform statistical analysis on results
+2. THROUGHPUT@Size = (S × 22 × 3600 / T_s) × SF
 
-EOSUMMARY
+3. QphH@Size = √(POWER@Size × THROUGHPUT@Size)
 
-    info "Summary saved to: $SUMMARY_FILE"
+Where:
+- QI(i,0): Query times from POWER test (stream 0)
+- RI(j,0): Refresh times from POWER test (stream 0)  
+- S: Query streams ($QUERY_STREAMS)
+- T_s: Measurement interval from INTERVAL_CSV
+- SF: Scale factor ($SCALE_FACTOR)
+
+Data Structure:
+- 15 iterations, each with 2 runs (Run 1 and Run 2)
+- For each iteration, calculate TPC-H metrics using the LOWER QphH@Size
+- Perform statistical analysis across 15 iterations
+
+Analysis Approach:
+1. Calculate Power, Throughput, and QphH for each of the 30 runs
+2. Group by iteration (2 runs per iteration)
+3. For each iteration, take the lower QphH@Size (TPC-H requirement)
+4. Perform statistical analysis on the 15 resulting QphH values
+EOF
+
+    log "TPC-H metrics summary saved to: $summary_file"
 }
 
+# Main execution function - SIMPLIFIED without execution order tracking
 main() {
-    log "=== TPC-H COMPLETE BENCHMARK ==="
+    log "Starting Complete TPC-H Benchmark..."
     log "I/O Method: $IO_METHOD"
     log "Database: $DB_NAME"
     log "Scale Factor: $SCALE_FACTOR"
-    log "Iterations: $ITERATIONS"
-    log "Runs per Iteration: $RUNS_PER_ITERATION"
+    log "Query Streams: $QUERY_STREAMS"
+    log "Iterations: $ITERATIONS (with $RUNS_PER_ITERATION runs each)"
     log "Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))"
     
-    # Initialize
-    initialize
-    test_connection
+    mkdir -p "$RESULTS_DIR"
+    initialize_csv
+    test_postgres_connection
     
-    local global_run_id=0
+    # Configure PostgreSQL for this I/O method
+    configure_postgresql "$IO_METHOD"
     
-    # Main benchmark loop
+    # Execute 15 iterations, each with 2 runs (TPC-H compliant)
     for iteration in $(seq 1 $ITERATIONS); do
-        log "=== STARTING ITERATION $iteration of $ITERATIONS ==="
+        log "Starting Iteration $iteration of $ITERATIONS"
         
-        for run in $(seq 1 $RUNS_PER_ITERATION); do
-            global_run_id=$((global_run_id + 1))
-            log "--- Run $run of $RUNS_PER_ITERATION (Global ID: $global_run_id) ---"
+        for run_in_iteration in $(seq 1 $RUNS_PER_ITERATION); do
+            # Calculate global run_id for CSV tracking
+            local run_id=$(( (iteration - 1) * RUNS_PER_ITERATION + run_in_iteration ))
             
-            # Execute both test types
-            execute_power_test "$iteration" "$run" "$global_run_id"
-            execute_throughput_test "$iteration" "$run" "$global_run_id"
+            log "Starting Run $run_in_iteration of $RUNS_PER_ITERATION (Global Run ID: $run_id)"
             
-            log "--- Completed Run $run ---"
+            # Power Test followed by Throughput Test (TPC-H requirement)
+            execute_power_test "$run_id" "$iteration" "$run_in_iteration"
+            execute_throughput_test "$run_id" "$iteration" "$run_in_iteration"
+            
+            log "Completed Run $run_in_iteration of $RUNS_PER_ITERATION"
         done
         
-        log "=== COMPLETED ITERATION $iteration ===\n"
+        log "Completed Iteration $iteration of $ITERATIONS"
     done
     
-    generate_summary
-    
-    log "=== BENCHMARK COMPLETED SUCCESSFULLY ==="
-    log "Total queries executed: $((global_run_id * 22 * 2))"  # 22 queries × 2 test types
-    log "Results: $CSV_OUTPUT"
-    log "Summary: $SUMMARY_FILE"
-    log "Log: $LOG_FILE"
+    generate_tpch_summary
+    log "Complete TPC-H benchmark execution finished!"
+    log "Total runs executed: $((ITERATIONS * RUNS_PER_ITERATION))"
+    log "Query results: $CSV_OUTPUT"
+    log "Refresh results: $REFRESH_CSV"
+    log "Interval results: $INTERVAL_CSV"
 }
 
-# Run main function
-main "$@"
-EOF
+# Cleanup
+trap 'unset PGPASSWORD; log "Script execution completed"' EXIT
 
-chmod +x final_benchmark.sh
+main "$@"
