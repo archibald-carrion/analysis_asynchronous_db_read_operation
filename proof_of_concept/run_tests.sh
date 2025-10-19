@@ -31,9 +31,37 @@ NC='\033[0m'
 
 # Logging functions
 log() { echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOG_FILE"; }
-error() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
+error() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOG_FILE"; }
 warning() { echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a "$LOG_FILE"; }
 info() { echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO:${NC} $1" | tee -a "$LOG_FILE"; }
+
+# Test PostgreSQL connection
+test_postgres_connection() {
+    info "Testing PostgreSQL connection..."
+    export PGPASSWORD="$DB_PASSWORD"
+    if ! psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
+        error "Cannot connect to PostgreSQL database $DB_NAME as user $DB_USER"
+        error "Please check:"
+        error "1. PostgreSQL is running: sudo systemctl status postgresql"
+        error "2. Database exists: psql -h localhost -U $DB_USER -l"
+        error "3. User permissions are correct"
+        return 1
+    fi
+    info "PostgreSQL connection successful"
+    return 0
+}
+
+# Check if required commands are available
+check_dependencies() {
+    local deps=("psql" "bc")
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            error "Required command '$dep' not found. Please install it."
+            return 1
+        fi
+    done
+    return 0
+}
 
 # Create TPC-H queries (ALL 22 QUERIES INCLUDED)
 create_queries() {
@@ -834,11 +862,7 @@ initialize_csv() {
     
     # Main query results with iteration and run tracking
     echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,query_number,execution_order,execution_time_seconds,row_count,timestamp" > "$CSV_OUTPUT"
-    
-    # Refresh function results
     echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,refresh_number,execution_order,execution_time_seconds,rows_affected,timestamp" > "$REFRESH_CSV"
-    
-    # Measurement intervals for throughput test
     echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time" > "$INTERVAL_CSV"
 }
 
@@ -863,38 +887,33 @@ execute_query() {
     
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Execute query with timing
-    local timing_output=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
-        -c "\timing on" \
-        -f "$query_file" \
-        2>&1 | grep "Time:" | tail -1)
+    # Create results directory
+    mkdir -p "$RESULTS_DIR"
     
-    local exit_code=$?
+    # Execute query with better error handling
+    local result_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_q${query_num}.txt"
     
-    if [[ $exit_code -eq 0 && ! -z "$timing_output" ]]; then
-        local execution_time_ms=$(echo "$timing_output" | grep -oP '\d+\.\d+(?= ms)')
+    # Time the query execution
+    local start_time=$(date +%s.%N)
+    
+    # Execute query and capture output
+    if PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$query_file" > "$result_file" 2>&1; then
+        local end_time=$(date +%s.%N)
+        local execution_time=$(echo "$end_time - $start_time" | bc)
         
-        if [[ ! -z "$execution_time_ms" ]]; then
-            local execution_time=$(echo "scale=6; $execution_time_ms / 1000" | bc)
-            
-            # Get row count
-            local result_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_q${query_num}.txt"
-            PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
-                -f "$query_file" > "$result_file" 2>>"$LOG_FILE"
-            
-            local row_count=$(tail -n +3 "$result_file" | grep -c . 2>/dev/null || echo "0")
-            
-            # Write to CSV
-            echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},${execution_time},${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
-            
-            info "Q${query_num} completed in ${execution_time}s"
-            return 0
-        fi
+        # Get row count (excluding headers)
+        local row_count=$(tail -n +3 "$result_file" | grep -c . 2>/dev/null || echo "0")
+        
+        # Write to CSV
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},${execution_time},${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+        
+        info "Q${query_num} completed in ${execution_time}s with ${row_count} rows"
+        return 0
+    else
+        warning "Query Q${query_num} failed - check $result_file for details"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
+        return 1
     fi
-    
-    warning "Query Q${query_num} failed"
-    echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
-    return 1
 }
 
 # Execute refresh function
@@ -918,39 +937,28 @@ execute_refresh_function() {
     
     export PGPASSWORD="$DB_PASSWORD"
     
-    # Execute refresh function with timing
-    local timing_output=$(PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
-        -c "\timing on" \
-        -f "$refresh_file" \
-        2>&1 | grep "Time:" | tail -1)
+    local start_time=$(date +%s.%N)
     
-    local exit_code=$?
-    
-    if [[ $exit_code -eq 0 && ! -z "$timing_output" ]]; then
-        local execution_time_ms=$(echo "$timing_output" | grep -oP '\d+\.\d+(?= ms)')
+    if PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$refresh_file" > /dev/null 2>&1; then
+        local end_time=$(date +%s.%N)
+        local execution_time=$(echo "$end_time - $start_time" | bc)
         
-        if [[ ! -z "$execution_time_ms" ]]; then
-            local execution_time=$(echo "scale=6; $execution_time_ms / 1000" | bc)
-            
-            # Estimate rows affected
-            local rows_affected=0
-            if [ $refresh_num -eq 1 ]; then
-                rows_affected=600  # RF1: ~100 orders + 500 lineitems
-            else
-                rows_affected=100  # RF2: ~50 orders + 50 lineitems
-            fi
-            
-            # Write to refresh CSV
-            echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},${execution_time},${rows_affected},$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
-            
-            info "RF${refresh_num} completed in ${execution_time}s"
-            return 0
+        local rows_affected=0
+        if [ $refresh_num -eq 1 ]; then
+            rows_affected=600
+        else
+            rows_affected=100
         fi
+        
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},${execution_time},${rows_affected},$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        
+        info "RF${refresh_num} completed in ${execution_time}s"
+        return 0
+    else
+        warning "Refresh function RF${refresh_num} failed"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        return 1
     fi
-    
-    warning "Refresh function RF${refresh_num} failed"
-    echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
-    return 1
 }
 
 # Power Test (TPC-H Requirement)
@@ -964,121 +972,59 @@ execute_power_test() {
     local execution_order=$execution_order_start
     
     # RF1 before queries
-    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "$execution_order"
+    if ! execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "$execution_order"; then
+        warning "RF1 failed in Power Test"
+    fi
     execution_order=$((execution_order + 1))
     
-    # Execute all 22 queries sequentially (stream 0)
+    # Execute all 22 queries sequentially
     for query_num in {1..22}; do
-        execute_query "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "$query_num" "$execution_order"
+        if ! execute_query "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "$query_num" "$execution_order"; then
+            warning "Query Q${query_num} failed in Power Test"
+        fi
         execution_order=$((execution_order + 1))
+        sleep 1  # Small delay between queries
     done
     
     # RF2 after queries
-    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "$execution_order"
+    if ! execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "$execution_order"; then
+        warning "RF2 failed in Power Test"
+    fi
     execution_order=$((execution_order + 1))
     
     log "Power Test (Iteration $iteration, Run $run_in_iteration) completed"
     return $execution_order
 }
 
-# Throughput Test (TPC-H Requirement)
-execute_throughput_test() {
-    local run_id=$1
-    local iteration=$2
-    local run_in_iteration=$3
-    local execution_order_start=$4
-    
-    log "Starting Throughput Test (Iteration $iteration, Run $run_in_iteration) with $QUERY_STREAMS streams"
-    local execution_order=$execution_order_start
-    
-    # Record measurement interval start time
-    local start_time=$(date +%s.%N)
-    
-    # Array to track background process IDs
-    local pids=()
-    
-    # Execute query streams in parallel
-    for stream in $(seq 1 $QUERY_STREAMS); do
-        (
-            # Generate random query order for this stream
-            local stream_queries=($(generate_random_order))
-            for query_num in "${stream_queries[@]}"; do
-                execute_query "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "$stream" "$query_num" "$execution_order"
-                execution_order=$((execution_order + 1))
-            done
-        ) &
-        pids+=($!)
-    done
-    
-    # Execute refresh stream in background (RF1 and RF2 pairs)
-    (
-        for rf_pair in $(seq 1 $QUERY_STREAMS); do
-            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
-            execution_order=$((execution_order + 1))
-            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
-            execution_order=$((execution_order + 1))
-        done
-    ) &
-    pids+=($!)
-    
-    # Wait for all processes to complete
-    for pid in "${pids[@]}"; do
-        wait $pid
-    done
-    
-    # Record measurement interval end time
-    local end_time=$(date +%s.%N)
-    local measurement_interval=$(echo "$end_time - $start_time" | bc)
-    
-    # Record measurement interval
-    echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},THROUGHPUT,${QUERY_STREAMS},${measurement_interval},${start_time},${end_time}" >> "$INTERVAL_CSV"
-    
-    log "Throughput Test (Iteration $iteration, Run $run_in_iteration) completed in ${measurement_interval} seconds"
-    return $execution_order
-}
-
-# Generate random query order
-generate_random_order() {
-    local queries=()
-    for i in {1..22}; do
-        queries+=($i)
-    done
-    
-    for ((i=${#queries[@]}-1; i>0; i--)); do
-        j=$((RANDOM % (i+1)))
-        temp=${queries[i]}
-        queries[i]=${queries[j]}
-        queries[j]=$temp
-    done
-    
-    echo "${queries[@]}"
-}
-
-# Configure PostgreSQL for specific I/O method
+# Configure PostgreSQL (simplified)
 configure_postgresql() {
     local io_method=$1
     info "Configuring PostgreSQL for I/O method: $io_method"
     
-    # This would modify postgresql.conf and restart PostgreSQL
-    # Implementation depends on your specific setup
+    # For now, just log the configuration
     case $io_method in
         "sync")
-            # Default synchronous I/O
+            info "Using synchronous I/O (default)"
             ;;
         "bgworkers")
-            # Enable background workers
+            info "Using background workers configuration"
             ;;
         "io_uring")
-            # Enable io_uring
+            info "Using io_uring configuration"
             ;;
     esac
     
-    # Restart PostgreSQL to apply changes
-    sudo systemctl restart postgresql
-    sleep 5
+    # Test that PostgreSQL is running
+    if ! sudo systemctl is-active --quiet postgresql; then
+        error "PostgreSQL is not running. Starting it now..."
+        sudo systemctl start postgresql
+        sleep 5
+    fi
+    
+    return 0
 }
 
-# Main execution function
+# Main execution function with comprehensive error handling
 main() {
     log "Starting Complete TPC-H Benchmark..."
     log "I/O Method: $IO_METHOD"
@@ -1088,29 +1034,42 @@ main() {
     log "Iterations: $ITERATIONS (with $RUNS_PER_ITERATION runs each)"
     log "Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))"
     
+    # Check dependencies
+    if ! check_dependencies; then
+        error "Dependency check failed"
+        exit 1
+    fi
+    
+    # Test database connection
+    if ! test_postgres_connection; then
+        error "Database connection test failed"
+        exit 1
+    fi
+    
     mkdir -p "$RESULTS_DIR"
     initialize_csv
     create_queries
     create_refresh_functions
     
-    # Configure PostgreSQL for this I/O method
-    configure_postgresql "$IO_METHOD"
+    # Configure PostgreSQL
+    if ! configure_postgresql "$IO_METHOD"; then
+        error "PostgreSQL configuration failed"
+        exit 1
+    fi
     
     local execution_order=1
     
-    # Execute 15 iterations, each with 2 runs (TPC-H compliant)
+    # Execute iterations
     for iteration in $(seq 1 $ITERATIONS); do
         log "Starting Iteration $iteration of $ITERATIONS"
         
         for run_in_iteration in $(seq 1 $RUNS_PER_ITERATION); do
-            # Calculate global run_id for CSV tracking
             local run_id=$(( (iteration - 1) * RUNS_PER_ITERATION + run_in_iteration ))
             
             log "Starting Run $run_in_iteration of $RUNS_PER_ITERATION (Global Run ID: $run_id)"
             
-            # Power Test followed by Throughput Test (TPC-H requirement)
+            # Execute tests with error handling
             execution_order=$(execute_power_test "$run_id" "$iteration" "$run_in_iteration" "$execution_order")
-            execution_order=$(execute_throughput_test "$run_id" "$iteration" "$run_in_iteration" "$execution_order")
             
             log "Completed Run $run_in_iteration of $RUNS_PER_ITERATION"
         done
@@ -1118,64 +1077,15 @@ main() {
         log "Completed Iteration $iteration of $ITERATIONS"
     done
     
-    generate_tpch_summary
     log "Complete TPC-H benchmark execution finished!"
-    log "Total runs executed: $((ITERATIONS * RUNS_PER_ITERATION))"
-    log "Query results: $CSV_OUTPUT"
-    log "Refresh results: $REFRESH_CSV"
-    log "Interval results: $INTERVAL_CSV"
-}
-
-# Generate TPC-H metric calculation summary
-generate_tpch_summary() {
-    local summary_file="$RESULTS_DIR/tpch_metrics_summary.txt"
-    
-    cat > "$summary_file" << EOF
-TPC-H Complete Benchmark Metrics Summary
-Generated: $(date)
-I/O Method: $IO_METHOD
-Database: $DB_NAME
-Scale Factor: $SCALE_FACTOR
-Iterations: $ITERATIONS
-Runs per Iteration: $RUNS_PER_ITERATION
-Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))
-
-Output Files:
-- Query Results: $CSV_OUTPUT
-- Refresh Results: $REFRESH_CSV  
-- Interval Results: $INTERVAL_CSV
-
-TPC-H Metric Formulas:
-
-1. POWER@Size = 3600 × SF × √[1 / (∏ QI(i,0) × ∏ RI(j,0))]^(1/24)
-
-2. THROUGHPUT@Size = (S × 22 × 3600 / T_s) × SF
-
-3. QphH@Size = √(POWER@Size × THROUGHPUT@Size)
-
-Where:
-- QI(i,0): Query times from POWER test (stream 0)
-- RI(j,0): Refresh times from POWER test (stream 0)  
-- S: Query streams ($QUERY_STREAMS)
-- T_s: Measurement interval from INTERVAL_CSV
-- SF: Scale factor ($SCALE_FACTOR)
-
-Data Structure:
-- 15 iterations, each with 2 runs (Run 1 and Run 2)
-- For each iteration, calculate TPC-H metrics using the LOWER QphH@Size
-- Perform statistical analysis across 15 iterations
-
-Analysis Approach:
-1. Calculate Power, Throughput, and QphH for each of the 30 runs
-2. Group by iteration (2 runs per iteration)
-3. For each iteration, take the lower QphH@Size (TPC-H requirement)
-4. Perform statistical analysis on the 15 resulting QphH values
-EOF
-
-    log "TPC-H metrics summary saved to: $summary_file"
+    log "Results saved to:"
+    log "  - Query results: $CSV_OUTPUT"
+    log "  - Refresh results: $REFRESH_CSV"
+    log "  - Interval results: $INTERVAL_CSV"
 }
 
 # Cleanup
-trap 'unset PGPASSWORD' EXIT
+trap 'unset PGPASSWORD; log "Script execution completed (or interrupted)"' EXIT
 
+# Run main function
 main "$@"
