@@ -13,3 +13,4 @@ query_results/
 installation.log
 query_execution.log
 
+venv/
