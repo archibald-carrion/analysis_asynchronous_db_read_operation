@@ -5,8 +5,8 @@ SELECT
 FROM 
     orders
 WHERE 
-    o_orderdate >= DATE '1993-07-01'
-    AND o_orderdate < DATE '1993-07-01' + INTERVAL '3 months'
+o_orderdate >= date '[DATE]'
+and o_orderdate < date '[DATE]' + interval '3' month
     AND EXISTS (
         SELECT *
         FROM lineitem

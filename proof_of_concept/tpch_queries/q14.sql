@@ -8,5 +8,5 @@ FROM
     part
 WHERE 
     l_partkey = p_partkey
-    AND l_shipdate >= DATE '1995-09-01'
-    AND l_shipdate < DATE '1995-09-01' + INTERVAL '1 month';
+    AND l_shipdate >= DATE '[DATE]'
+    AND l_shipdate < DATE '[DATE]' + INTERVAL '1' MONTH;

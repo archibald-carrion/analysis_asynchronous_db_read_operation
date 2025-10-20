@@ -1,38 +1,25 @@
--- Potential Part Promotion Query (Q20)
-SELECT 
-    s_name,
-    s_address
-FROM 
-    supplier,
-    nation
-WHERE 
-    s_suppkey IN (
-        SELECT 
-            ps_suppkey
-        FROM 
-            partsupp
-        WHERE 
-            ps_partkey IN (
-                SELECT 
-                    p_partkey
-                FROM 
-                    part
-                WHERE 
-                    p_name LIKE 'forest%'
-            )
-            AND ps_availqty > (
-                SELECT 
-                    0.5 * SUM(l_quantity)
-                FROM 
-                    lineitem
-                WHERE 
-                    l_partkey = ps_partkey
-                    AND l_suppkey = ps_suppkey
-                    AND l_shipdate >= DATE '1994-01-01'
-                    AND l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
-            )
-    )
-    AND s_nationkey = n_nationkey
-    AND n_name = 'CANADA'
-ORDER BY 
-    s_name;
+-- 2.4.20.2 Functional Query Definition
+select s_name,
+       s_address
+  from supplier,
+       nation
+ where s_suppkey in (
+   select ps_suppkey
+     from partsupp
+    where ps_partkey in (
+      select p_partkey
+        from part
+       where p_name like '[COLOR]%'
+   )
+      and ps_availqty > (
+      select 0.5 * sum(l_quantity)
+        from lineitem
+       where l_partkey = ps_partkey
+         and l_suppkey = ps_suppkey
+         and l_shipdate >= date '[DATE]'
+         and l_shipdate < date '[DATE]' + interval '1' year
+   )
+)
+   and s_nationkey = n_nationkey
+   and n_name = '[NATION]'
+ order by s_name;

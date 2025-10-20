@@ -6,8 +6,8 @@ WITH revenue AS (
     FROM 
         lineitem
     WHERE 
-        l_shipdate >= DATE '1996-01-01'
-        AND l_shipdate < DATE '1996-01-01' + INTERVAL '3 months'
+l_shipdate >= date '[DATE]'
+and l_shipdate < date '[DATE]' + interval '3' month
     GROUP BY 
         l_suppkey
 )

@@ -17,11 +17,11 @@ FROM
 WHERE 
     p_partkey = ps_partkey
     AND s_suppkey = ps_suppkey
-    AND p_size = 15
-    AND p_type LIKE '%BRASS'
+    AND p_size = [SIZE]
+    AND p_type LIKE '%[TYPE]'
     AND s_nationkey = n_nationkey
     AND n_regionkey = r_regionkey
-    AND r_name = 'EUROPE'
+    AND r_name = '[REGION]'
     AND ps_supplycost = (
         SELECT 
             MIN(ps_supplycost)
@@ -35,7 +35,7 @@ WHERE
             AND s_suppkey = ps_suppkey
             AND s_nationkey = n_nationkey
             AND n_regionkey = r_regionkey
-            AND r_name = 'EUROPE'
+            AND r_name = '[REGION]'
     )
 ORDER BY 
     s_acctbal DESC,

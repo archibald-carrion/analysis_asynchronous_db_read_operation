@@ -23,9 +23,9 @@ FROM (
         AND c_custkey = o_custkey
         AND s_nationkey = n1.n_nationkey
         AND c_nationkey = n2.n_nationkey
-        AND ((n1.n_name = 'FRANCE' AND n2.n_name = 'GERMANY')
-            OR (n1.n_name = 'GERMANY' AND n2.n_name = 'FRANCE'))
-        AND l_shipdate BETWEEN DATE '1995-01-01' AND DATE '1996-12-31'
+        AND ((n1.n_name = '[NATION1]' AND n2.n_name = '[NATION2]')
+            OR (n1.n_name = '[NATION2]' AND n2.n_name = '[NATION1]'))
+        AND l_shipdate BETWEEN DATE '[DATE]' AND DATE '[DATE]' + INTERVAL '1' YEAR
 ) AS shipping
 GROUP BY 
     supp_nation,

@@ -9,9 +9,9 @@ FROM
     part
 WHERE 
     p_partkey = ps_partkey
-    AND p_brand <> 'Brand#45'
-    AND p_type NOT LIKE 'MEDIUM POLISHED%'
-    AND p_size IN (49, 14, 23, 45, 19, 3, 36, 9)
+    AND p_brand <> '[BRAND]'
+    AND p_type NOT LIKE '[TYPE]%'
+    AND p_size IN ([SIZE1], [SIZE2], [SIZE3], [SIZE4], [SIZE5], [SIZE6], [SIZE7], [SIZE8])
     AND ps_suppkey NOT IN (
         SELECT 
             s_suppkey

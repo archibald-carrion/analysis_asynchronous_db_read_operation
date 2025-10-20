@@ -9,13 +9,14 @@ FROM
 WHERE 
     ps_suppkey = s_suppkey
     AND s_nationkey = n_nationkey
-    AND n_name = 'GERMANY'
+    AND n_name = '[NATION]'
 GROUP BY 
     ps_partkey
 HAVING 
     SUM(ps_supplycost * ps_availqty) > (
         SELECT 
-            SUM(ps_supplycost * ps_availqty) * 0.0001
+sum(ps_supplycost * ps_availqty) *
+[fraction]
         FROM 
             partsupp,
             supplier,
@@ -23,7 +24,7 @@ HAVING
         WHERE 
             ps_suppkey = s_suppkey
             AND s_nationkey = n_nationkey
-            AND n_name = 'GERMANY'
+            AND n_name = '[NATION]'
     )
 ORDER BY 
     value DESC;

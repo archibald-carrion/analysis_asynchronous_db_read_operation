@@ -4,7 +4,7 @@ SELECT
 FROM 
     lineitem
 WHERE 
-    l_shipdate >= DATE '1994-01-01'
-    AND l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
-    AND l_discount BETWEEN 0.05 AND 0.07
-    AND l_quantity < 24;
+    l_shipdate >= DATE '[DATE]'
+    AND l_shipdate < DATE '[DATE]' + INTERVAL '1' YEAR
+    AND l_discount BETWEEN [DISCOUNT] - 0.01 AND [DISCOUNT] + 0.01
+    AND l_quantity < [QUANTITY];
