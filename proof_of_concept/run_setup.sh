@@ -130,7 +130,7 @@ setup_tpch_tools() {
   export DSS_CONFIG="$dbgen_dir"
   export DSS_QUERY="$dbgen_dir/queries"
   export DSS_PATH="$SCRIPT_DIR/tpch-data"
-  mkdir -p "$DSS_PATH" "$SCRIPT_DIR/tpch-queries"
+  mkdir -p "$DSS_PATH" "$SCRIPT_DIR/tpch_queries"
 
   [[ -x "$dbgen_dir/dbgen" ]] || err "dbgen not built"
   [[ -x "$dbgen_dir/qgen"  ]] || err "qgen not built"
@@ -171,9 +171,9 @@ generate_and_load_data() {
 generate_queries() {
   log "Generating queries Q1..Q22 (SF=${SCALE_FACTOR})"
   for i in $(seq 1 22); do
-    "$DSS_CONFIG/qgen" -v -c -s "$SCALE_FACTOR" "$i" > "$SCRIPT_DIR/tpch-queries/q${i}.sql"
+    "$DSS_CONFIG/qgen" -v -c -s "$SCALE_FACTOR" "$i" > "$SCRIPT_DIR/tpch_queries/q${i}.sql"
   done
-  log "Queries saved in $SCRIPT_DIR/tpch-queries/"
+  log "Queries saved in $SCRIPT_DIR/tpch_queries/"
 }
 
 main() {
@@ -199,7 +199,7 @@ main() {
   log "All done!"
   log "DB: ${DB_NAME}  User: ${DB_USER}"
   log "Data dir: ${DSS_PATH}"
-  log "Queries : $SCRIPT_DIR/tpch-queries/"
+  log "Queries : $SCRIPT_DIR/tpch_queries/"
 }
 
 main "$@"

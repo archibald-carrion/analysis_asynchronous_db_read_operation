@@ -6,19 +6,19 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_FILE="$SCRIPT_DIR/query_execution.log"
-RESULTS_DIR="$SCRIPT_DIR/query_results"
-CSV_OUTPUT="$SCRIPT_DIR/tpch_complete_results.csv"
-REFRESH_CSV="$SCRIPT_DIR/tpch_refresh_results.csv"
-INTERVAL_CSV="$SCRIPT_DIR/tpch_interval_results.csv"
-DB_NAME="tpch_db"
-DB_USER="tpch_user"
-DB_PASSWORD="tpch_password_123"
-ITERATIONS=2
-RUNS_PER_ITERATION=2
-QUERY_STREAMS=2
-SCALE_FACTOR=1
-IO_METHOD="${1:-sync}"
+LOG_FILE="${LOG_FILE:-$SCRIPT_DIR/query_execution.log}"
+RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/query_results}"
+CSV_OUTPUT="${CSV_OUTPUT:-$SCRIPT_DIR/tpch_complete_results.csv}"
+REFRESH_CSV="${REFRESH_CSV:-$SCRIPT_DIR/tpch_refresh_results.csv}"
+INTERVAL_CSV="${INTERVAL_CSV:-$SCRIPT_DIR/tpch_interval_results.csv}"
+DB_NAME="${DB_NAME:-tpch_db}"
+DB_USER="${DB_USER:-tpch_user}"
+DB_PASSWORD="${DB_PASSWORD:-tpch_password_123}"
+ITERATIONS="${ITERATIONS:-2}"
+RUNS_PER_ITERATION="${RUNS_PER_ITERATION:-2}"
+QUERY_STREAMS="${QUERY_STREAMS:-2}"
+SCALE_FACTOR="${SCALE_FACTOR:-1}"
+IO_METHOD="${IO_METHOD:-${1:-sync}}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -203,15 +203,16 @@ execute_throughput_test() {
     # Record measurement interval start time
     local start_time=$(date +%s.%N)
     
-    # Array to track background process IDs
     local pids=()
-    local execution_order=1
+    local queries_per_stream=22
+    local refresh_start=$((QUERY_STREAMS * queries_per_stream + 1))
     
     # Execute query streams in parallel
     for stream in $(seq 1 $QUERY_STREAMS); do
         (
             # Generate random query order for this stream
             local stream_queries=($(generate_random_order))
+            local execution_order=$(( (stream - 1) * queries_per_stream + 1 ))
             for query_num in "${stream_queries[@]}"; do
                 execute_query "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "$stream" "$query_num" "$execution_order"
                 execution_order=$((execution_order + 1))
@@ -222,6 +223,7 @@ execute_throughput_test() {
     
     # Execute refresh stream in background (RF1 and RF2 pairs)
     (
+        local execution_order=$refresh_start
         for rf_pair in $(seq 1 $QUERY_STREAMS); do
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
             execution_order=$((execution_order + 1))
@@ -258,14 +260,21 @@ configure_postgresql() {
         "bgworkers")
             info "Using background workers configuration"
             ;;
-        "io_uring")
+        "iouring"|"io_uring")
             info "Using io_uring configuration"
+            ;;
+        *)
+            warning "Unknown I/O method: $io_method (continuing with current configuration)"
             ;;
     esac
     
-    # Restart PostgreSQL to apply changes
-    sudo systemctl restart postgresql
-    sleep 5
+    # Restart PostgreSQL to apply changes unless orchestrator already handled it
+    if [[ -z "${SKIP_POSTGRES_RESTART:-}" ]]; then
+        sudo systemctl restart postgresql
+        sleep 5
+    else
+        info "PostgreSQL restart skipped (SKIP_POSTGRES_RESTART=${SKIP_POSTGRES_RESTART})"
+    fi
 }
 
 # Generate TPC-H metric calculation summary
