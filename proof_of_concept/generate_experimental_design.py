@@ -226,40 +226,14 @@ def save_schedule(schedule, output_file, summary):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate randomized experimental design for TPC-H I/O benchmarking',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Generate CRD with 5 replicates (45 runs total)
-  python generate_experimental_design.py --design crd --replicates 5
-  
-  # Generate RCBD with 10 replicates (90 runs total)
-  python generate_experimental_design.py --design rcbd --replicates 10 --seed 42
-  
-  # Quick test design (3 replicates, 27 runs)
-  python generate_experimental_design.py --design rcbd --replicates 3 --output test_schedule.csv
-        """
-    )
-    
-    parser.add_argument(
-        '--design',
-        choices=['crd', 'rcbd'],
-        default='rcbd',
-        help='Experimental design type (default: rcbd - Randomized Complete Block Design)'
+        description='Generate RCBD schedule for TPC-H I/O benchmarking'
     )
     
     parser.add_argument(
         '--replicates',
         type=int,
         default=5,
-        help='Number of replicates per treatment combination (default: 5)'
-    )
-    
-    parser.add_argument(
-        '--io-methods',
-        nargs='+',
-        default=['sync', 'bgworkers', 'iouring'],
-        help='I/O methods to test (default: sync bgworkers iouring)'
+        help='Replicates per I/O method and database size (default: 5)'
     )
     
     parser.add_argument(
@@ -277,64 +251,35 @@ Examples:
         help='Random seed for reproducibility (default: random)'
     )
     
-    parser.add_argument(
-        '--output',
-        default='experimental_design_schedule.csv',
-        help='Output CSV file name (default: experimental_design_schedule.csv)'
-    )
-    
-    parser.add_argument(
-        '--runtime',
-        type=int,
-        default=30,
-        help='Expected runtime per run in minutes (default: 30)'
-    )
-    
-    parser.add_argument(
-        '--cooldown',
-        type=int,
-        default=5,
-        help='Cooldown period between runs in minutes (default: 5)'
-    )
-    
     args = parser.parse_args()
     
-    # Validate inputs
-    if args.replicates < 3:
-        print("⚠️  WARNING: Less than 3 replicates may not provide sufficient statistical power")
+    if args.replicates < 1:
+        print("ERROR: Replicates must be at least 1")
+        sys.exit(1)
     
     if args.seed is None:
         args.seed = np.random.randint(0, 10000)
-        print(f"🎲 Using random seed: {args.seed} (save this for reproducibility)")
+        print(f"Seed not provided. Using randomly generated seed: {args.seed}")
     
-    # Generate treatment combinations
-    print("\n🔬 Generating experimental design...")
-    treatments = generate_treatment_combinations(args.io_methods, args.db_sizes, args.replicates)
+    io_methods = ['sync', 'bgworkers', 'iouring']
+    output_file = 'experimental_design_schedule.csv'
+    runtime_per_run = 30
+    cooldown = 5
     
-    # Generate schedule based on design type
-    if args.design == 'crd':
-        print("📋 Design: Completely Randomized Design (CRD)")
-        schedule = generate_crd_schedule(treatments, seed=args.seed)
-    else:  # rcbd
-        print("📋 Design: Randomized Complete Block Design (RCBD)")
-        print("   Blocking factor: Database Size")
-        schedule = generate_rcbd_schedule(treatments, blocking_factor='db_size_gb', seed=args.seed)
+    print("\nGenerating randomized complete block design (RCBD)...")
+    print(f"  Replicates: {args.replicates}")
+    print(f"  Database sizes (GB): {', '.join(map(str, args.db_sizes))}")
+    print(f"  I/O methods: {', '.join(io_methods)}")
+    print(f"  Seed: {args.seed}")
     
-    # Add execution metadata
-    schedule = add_execution_metadata(schedule, runtime_per_run=args.runtime, cooldown=args.cooldown)
-    
-    # Generate summary statistics
+    treatments = generate_treatment_combinations(io_methods, args.db_sizes, args.replicates)
+    schedule = generate_rcbd_schedule(treatments, blocking_factor='db_size_gb', seed=args.seed)
+    schedule = add_execution_metadata(schedule, runtime_per_run=runtime_per_run, cooldown=cooldown)
     summary = generate_summary_stats(schedule)
+    save_schedule(schedule, output_file, summary)
     
-    # Save to file
-    save_schedule(schedule, args.output, summary)
-    
-    print("\n✅ Experimental design generation complete!")
-    print("\n📝 Next steps:")
-    print("   1. Review the generated schedule CSV file")
-    print("   2. Ensure you have created all 3 database sizes (1GB, 10GB, 100GB)")
-    print("   3. Use the modified run_all_benchmarks.sh to execute runs in randomized order")
-    print("   4. Track progress by updating 'status' column in the CSV")
+    print("\nSchedule written to experimental_design_schedule.csv")
+    print("Summary written to experimental_design_schedule_summary.txt")
 
 
 if __name__ == '__main__':
