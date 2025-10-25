@@ -26,7 +26,7 @@ check_schedule() {
         error "Schedule file not found: $SCHEDULE_FILE
         
 Please generate it first:
-    python generate_experimental_design.py --design rcbd --replicates 5
+    python generate_experimental_design.py --replicates 5 --seed 42
         "
     fi
     
@@ -370,9 +370,9 @@ update_schedule_status() {
     # Create temporary file with updated status
     awk -F',' -v run="$run_order" -v status="$status" -v runtime="$runtime_sec" \
         -v qphh="$qphh" -v ts="$timestamp" \
-        'BEGIN {OFS=","} 
-         NR==1 {print; next} 
-         $1==run {$NF-6=status; $NF-5=runtime; $NF-4=ts; $NF-3=qphh; print; next} 
+        'BEGIN {OFS=","}
+         NR==1 {print; next}
+         $1==run {$(NF-6)=status; $(NF-5)=runtime; $(NF-4)=ts; $(NF-3)=qphh; print; next}
          {print}' \
         "$SCHEDULE_FILE" > "${SCHEDULE_FILE}.tmp"
     
