@@ -32,7 +32,7 @@ Please generate it first:
     
     # Count total runs and pending runs
     local total_runs=$(tail -n +2 "$SCHEDULE_FILE" | wc -l | tr -d ' ')
-    local pending_runs=$(tail -n +2 "$SCHEDULE_FILE" | grep -c "PENDING" || echo "0")
+    local pending_runs=$(tail -n +2 "$SCHEDULE_FILE" | grep -c "PENDING" || true)
     local completed_runs=$((total_runs - pending_runs))
     
     log "Schedule file: $SCHEDULE_FILE"
@@ -453,9 +453,9 @@ Schedule file: $SCHEDULE_FILE
 
 Execution Summary
 -----------------
-Completed runs: $(grep -c "COMPLETED" "$SCHEDULE_FILE" || echo "0")
-Failed runs: $(grep -c "FAILED" "$SCHEDULE_FILE" || echo "0")
-Pending runs: $(grep -c "PENDING" "$SCHEDULE_FILE" || echo "0")
+Completed runs: $(grep -c "COMPLETED" "$SCHEDULE_FILE" || true)
+Failed runs: $(grep -c "FAILED" "$SCHEDULE_FILE" || true)
+Pending runs: $(grep -c "PENDING" "$SCHEDULE_FILE" || true)
 
 Results Location
 ----------------
