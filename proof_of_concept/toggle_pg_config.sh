@@ -66,6 +66,26 @@ apply_mode() {
     esac
 }
 
+wait_for_postgres() {
+    local timeout=${1:-180}
+    local waited=0
+    local step=3
+
+    while ! sudo -u postgres psql -Atqc "SELECT 1;" >/dev/null 2>&1; do
+        sleep "$step"
+        waited=$((waited + step))
+
+        if [[ $waited -ge $timeout ]]; then
+            echo "❌ PostgreSQL did not become ready within ${timeout}s"
+            echo "Last service status:"
+            systemctl status postgresql --no-pager | tail -n 20
+            return 1
+        fi
+    done
+
+    return 0
+}
+
 # Main execution
 main() {
     local target_mode=$1
@@ -102,19 +122,12 @@ main() {
     # Restart PostgreSQL
     echo "Restarting PostgreSQL..."
     systemctl restart postgresql
-    
-    # Wait for restart
-    sleep 5
-    local wait_count=0
-    while ! pg_isready >/dev/null 2>&1; do
-        sleep 2
-        wait_count=$((wait_count + 1))
-        if [[ $wait_count -gt 10 ]]; then
-            echo "❌ PostgreSQL failed to start"
-            exit 1
-        fi
-    done
-    
+    echo "Waiting for PostgreSQL to accept connections..."
+
+    if ! wait_for_postgres 180; then
+        exit 1
+    fi
+
     echo "✅ PostgreSQL restarted in $target_mode mode"
     
     # Show configuration summary
