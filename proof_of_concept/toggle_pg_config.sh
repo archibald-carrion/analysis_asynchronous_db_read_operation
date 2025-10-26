@@ -17,10 +17,10 @@ show_usage() {
 }
 
 get_current_mode() {
-    if grep -q "^max_worker_processes = 8" "$CONF_FILE" && ! grep -q "^io_uring_workers" "$CONF_FILE"; then
-        echo "bgworkers"
-    elif grep -q "^io_uring_workers = 4" "$CONF_FILE"; then
+    if grep -q "^io_method *= *'io_uring'" "$CONF_FILE"; then
         echo "iouring"
+    elif grep -q "^max_worker_processes = 8" "$CONF_FILE"; then
+        echo "bgworkers"
     else
         echo "sync"
     fi
@@ -156,7 +156,7 @@ main() {
     
     echo ""
     echo "Key settings:"
-    grep -E "^(max_worker_processes|max_parallel_workers|io_uring_workers)" "$CONF_FILE" 2>/dev/null || \
+    grep -E "^(max_worker_processes|max_parallel_workers|io_method)" "$CONF_FILE" 2>/dev/null || \
     echo "  (Using default synchronous settings)"
 }
 

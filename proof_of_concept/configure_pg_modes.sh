@@ -67,11 +67,8 @@ max_worker_processes = 8
 max_parallel_workers_per_gather = 4
 max_parallel_workers = 8
 
-# io_uring specific settings (PostgreSQL 18+)
-io_uring_workers = 4
-io_uring_ring_entries = 1024
-# io_uring_sqpoll = on
-# io_uring_sqpoll_cpu = 0
+# Enable io_uring I/O method (PostgreSQL must be built with --with-io-uring)
+io_method = 'io_uring'
 
 # Optimized for async I/O
 shared_buffers = 1GB
