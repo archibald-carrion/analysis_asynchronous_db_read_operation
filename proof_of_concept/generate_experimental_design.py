@@ -2,12 +2,12 @@
 """
 Generate Randomized Experimental Design for TPC-H I/O Method Comparison
 
-This script creates a properly randomized run schedule for a factorial experimental design:
-- Factor 1: I/O Method (3 levels: sync, bgworkers, iouring)
-- Factor 2: Database Size (3 levels: 1GB, 10GB, 100GB)
-- Replicates: 5-10 per treatment combination
+This script creates a randomized run schedule for a factorial experimental design:
+- Factor 1: I/O Method (configurable list, default: sync, bgworkers, iouring)
+- Factor 2: Database Size (configurable list, supports sub-GB scales such as 0.01)
+- Replicates: user-defined per treatment combination
 
-Output: CSV file with randomized run schedule
+Output: CSV file with randomized run schedule plus a textual summary.
 """
 
 import pandas as pd
@@ -15,6 +15,51 @@ import numpy as np
 from datetime import datetime
 import argparse
 import sys
+from decimal import Decimal, InvalidOperation
+
+
+def format_numeric(value: float) -> str:
+    """Format numbers without trailing zeros (e.g., 1.0 -> '1', 0.25 -> '0.25')."""
+    return f"{value:g}"
+
+
+def format_db_label(db_size_gb: float) -> str:
+    """
+    Convert a scale factor (GB) into a human-friendly size label.
+    Examples:
+        0.01 -> '10MB'
+        0.1  -> '100MB'
+        1    -> '1GB'
+        10   -> '10GB'
+    """
+    size_decimal = Decimal(str(db_size_gb))
+    if size_decimal >= 1:
+        integral = size_decimal == size_decimal.to_integral()
+        value = int(size_decimal) if integral else float(size_decimal)
+        return f"{format_numeric(value)}GB"
+
+    mb_value = size_decimal * Decimal(1000)
+    integral = mb_value == mb_value.to_integral()
+    value = int(mb_value) if integral else float(mb_value)
+    return f"{format_numeric(value)}MB"
+
+
+def sanitize_db_name(db_label: str) -> str:
+    """Create a database name from the label (e.g., '10MB' -> 'tpch_db_10mb')."""
+    return f"tpch_db_{db_label.lower()}"
+
+
+def db_size_type(value: str) -> float:
+    """Argparse helper to parse positive numeric database sizes."""
+    try:
+        decimal_value = Decimal(value)
+    except InvalidOperation as exc:
+        raise argparse.ArgumentTypeError(f"Invalid database size '{value}'") from exc
+
+    if decimal_value <= 0:
+        raise argparse.ArgumentTypeError(f"Database size must be positive (got {value})")
+
+    return float(decimal_value)
 
 
 def generate_treatment_combinations(io_methods, db_sizes, replicates):
@@ -32,14 +77,17 @@ def generate_treatment_combinations(io_methods, db_sizes, replicates):
     treatments = []
     
     for db_size in db_sizes:
+        db_label = format_db_label(db_size)
+        db_name = sanitize_db_name(db_label)
         for io_method in io_methods:
             for rep in range(1, replicates + 1):
                 treatments.append({
                     'db_size_gb': db_size,
+                    'db_label': db_label,
+                    'db_name': db_name,
                     'io_method': io_method,
                     'replicate': rep,
-                    'treatment_id': f"{db_size}GB_{io_method}",
-                    'db_name': f"tpch_db_{db_size}gb"
+                    'treatment_id': f"{db_label}_{io_method}"
                 })
     
     return pd.DataFrame(treatments)
@@ -77,7 +125,7 @@ def generate_rcbd_schedule(treatments_df, blocking_factor='db_size_gb', seed=Non
     
     # Group by blocking factor
     blocks = []
-    block_ids = treatments_df[blocking_factor].unique()
+    block_ids = list(treatments_df[blocking_factor].unique())
     
     # Randomize block order
     np.random.shuffle(block_ids)
@@ -87,7 +135,11 @@ def generate_rcbd_schedule(treatments_df, blocking_factor='db_size_gb', seed=Non
         
         # Randomize within block
         block_data = block_data.sample(frac=1.0).reset_index(drop=True)
-        block_data['block_id'] = f"Block{block_num}_{block_value}GB"
+        block_label = (
+            block_value if blocking_factor != 'db_size_gb'
+            else format_db_label(block_value)
+        )
+        block_data['block_id'] = f"Block{block_num}_{block_label}"
         
         blocks.append(block_data)
     
@@ -155,6 +207,7 @@ def generate_summary_stats(schedule):
         'total_runs': len(schedule),
         'io_methods': schedule['io_method'].unique().tolist(),
         'db_sizes': schedule['db_size_gb'].unique().tolist(),
+        'db_labels': schedule['db_label'].unique().tolist(),
         'replicates_per_treatment': len(schedule) // (
             len(schedule['io_method'].unique()) * len(schedule['db_size_gb'].unique())
         ),
@@ -177,7 +230,10 @@ def save_schedule(schedule, output_file, summary):
     print(f"✅ Experimental design schedule saved to: {output_file}")
     
     # Save summary to text file
-    summary_file = output_file.replace('.csv', '_summary.txt')
+    if output_file.lower().endswith('.csv'):
+        summary_file = f"{output_file[:-4]}_summary.txt"
+    else:
+        summary_file = f"{output_file}_summary.txt"
     with open(summary_file, 'w') as f:
         f.write("=" * 70 + "\n")
         f.write("EXPERIMENTAL DESIGN SUMMARY\n")
@@ -190,7 +246,7 @@ def save_schedule(schedule, output_file, summary):
         
         f.write(f"Factors:\n")
         f.write(f"  - I/O Methods: {', '.join(summary['io_methods'])}\n")
-        f.write(f"  - Database Sizes: {', '.join(map(str, summary['db_sizes']))} GB\n")
+        f.write(f"  - Database Sizes: {', '.join(summary['db_labels'])}\n")
         f.write(f"  - Replicates per treatment: {summary['replicates_per_treatment']}\n\n")
         
         f.write(f"Time Estimate:\n")
@@ -200,7 +256,8 @@ def save_schedule(schedule, output_file, summary):
         f.write("Treatment Allocation:\n")
         allocation = schedule.groupby(['db_size_gb', 'io_method']).size()
         for (db_size, io_method), count in allocation.items():
-            f.write(f"  - {db_size}GB + {io_method}: {count} runs\n")
+            db_label = format_db_label(db_size)
+            f.write(f"  - {db_label} + {io_method}: {count} runs\n")
         
         f.write("\n" + "=" * 70 + "\n")
     
@@ -213,14 +270,25 @@ def save_schedule(schedule, output_file, summary):
     print(f"Design Type: {summary['design_type']}")
     print(f"Total Runs: {summary['total_runs']}")
     print(f"I/O Methods: {', '.join(summary['io_methods'])}")
-    print(f"Database Sizes: {', '.join(map(str, summary['db_sizes']))} GB")
+    print(f"Database Sizes: {', '.join(summary['db_labels'])}")
     print(f"Replicates: {summary['replicates_per_treatment']} per treatment")
     print(f"Estimated Duration: {summary['estimated_total_time_hours']:.1f} hours ({summary['estimated_total_time_hours']/24:.1f} days)")
     print("=" * 70)
     
     # Show first 10 runs
     print("\nFirst 10 runs in randomized order:")
-    print(schedule[['run_order', 'db_size_gb', 'io_method', 'replicate', 'treatment_id']].head(10).to_string(index=False))
+    preview_columns = [
+        col for col in [
+            'run_order',
+            'db_label',
+            'db_size_gb',
+            'db_name',
+            'io_method',
+            'replicate',
+            'treatment_id'
+        ] if col in schedule.columns
+    ]
+    print(schedule[preview_columns].head(10).to_string(index=False))
     print("\n... (see full schedule in CSV file)")
 
 
@@ -239,9 +307,36 @@ def main():
     parser.add_argument(
         '--db-sizes',
         nargs='+',
+        type=db_size_type,
+        default=[1.0, 10.0, 100.0],
+        help='Database sizes in GB (supports decimals, default: 1 10 100)'
+    )
+    
+    parser.add_argument(
+        '--io-methods',
+        nargs='+',
+        default=['sync', 'bgworkers', 'iouring'],
+        help='I/O methods to include in the design (default: sync bgworkers iouring)'
+    )
+    
+    parser.add_argument(
+        '--output',
+        default='experimental_design_schedule.csv',
+        help='Output CSV filename (default: experimental_design_schedule.csv)'
+    )
+    
+    parser.add_argument(
+        '--runtime-per-run',
         type=int,
-        default=[1, 10, 100],
-        help='Database sizes in GB (default: 1 10 100)'
+        default=30,
+        help='Estimated runtime per run in minutes (default: 30)'
+    )
+    
+    parser.add_argument(
+        '--cooldown',
+        type=int,
+        default=5,
+        help='Cooldown period between runs in minutes (default: 5)'
     )
     
     parser.add_argument(
@@ -257,29 +352,61 @@ def main():
         print("ERROR: Replicates must be at least 1")
         sys.exit(1)
     
+    if args.runtime_per_run < 1:
+        print("ERROR: Runtime per run must be at least 1 minute")
+        sys.exit(1)
+    
+    if args.cooldown < 0:
+        print("ERROR: Cooldown cannot be negative")
+        sys.exit(1)
+    
     if args.seed is None:
         args.seed = np.random.randint(0, 10000)
         print(f"Seed not provided. Using randomly generated seed: {args.seed}")
     
-    io_methods = ['sync', 'bgworkers', 'iouring']
-    output_file = 'experimental_design_schedule.csv'
-    runtime_per_run = 30
-    cooldown = 5
+    io_methods = args.io_methods
+    output_file = args.output
+    runtime_per_run = args.runtime_per_run
+    cooldown = args.cooldown
+    formatted_sizes = [format_db_label(size) for size in args.db_sizes]
     
     print("\nGenerating randomized complete block design (RCBD)...")
     print(f"  Replicates: {args.replicates}")
-    print(f"  Database sizes (GB): {', '.join(map(str, args.db_sizes))}")
+    print(f"  Database sizes: {', '.join(formatted_sizes)}")
     print(f"  I/O methods: {', '.join(io_methods)}")
+    print(f"  Runtime per run (min): {runtime_per_run}")
+    print(f"  Cooldown (min): {cooldown}")
     print(f"  Seed: {args.seed}")
     
     treatments = generate_treatment_combinations(io_methods, args.db_sizes, args.replicates)
-    schedule = generate_rcbd_schedule(treatments, blocking_factor='db_size_gb', seed=args.seed)
+    schedule = generate_rcbd_schedule(treatments, blocking_factor='db_label', seed=args.seed)
     schedule = add_execution_metadata(schedule, runtime_per_run=runtime_per_run, cooldown=cooldown)
+    
+    # Reorder columns for readability
+    preferred_columns = [
+        'run_order',
+        'db_label',
+        'db_size_gb',
+        'db_name',
+        'io_method',
+        'replicate',
+        'treatment_id',
+        'block_id',
+        'design_type'
+    ]
+    existing_columns = [col for col in preferred_columns if col in schedule.columns]
+    remaining_columns = [col for col in schedule.columns if col not in existing_columns]
+    schedule = schedule[existing_columns + remaining_columns]
+    
     summary = generate_summary_stats(schedule)
     save_schedule(schedule, output_file, summary)
     
-    print("\nSchedule written to experimental_design_schedule.csv")
-    print("Summary written to experimental_design_schedule_summary.txt")
+    if output_file.lower().endswith('.csv'):
+        summary_file = f"{output_file[:-4]}_summary.txt"
+    else:
+        summary_file = f"{output_file}_summary.txt"
+    print(f"\nSchedule written to {output_file}")
+    print(f"Summary written to {summary_file}")
 
 
 if __name__ == '__main__':
