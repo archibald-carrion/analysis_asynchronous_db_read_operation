@@ -83,7 +83,6 @@ def generate_treatment_combinations(io_methods, db_sizes, replicates):
             for rep in range(1, replicates + 1):
                 treatments.append({
                     'db_size_gb': db_size,
-                    'db_label': db_label,
                     'db_name': db_name,
                     'io_method': io_method,
                     'replicate': rep,
@@ -207,7 +206,6 @@ def generate_summary_stats(schedule):
         'total_runs': len(schedule),
         'io_methods': schedule['io_method'].unique().tolist(),
         'db_sizes': schedule['db_size_gb'].unique().tolist(),
-        'db_labels': schedule['db_label'].unique().tolist(),
         'replicates_per_treatment': len(schedule) // (
             len(schedule['io_method'].unique()) * len(schedule['db_size_gb'].unique())
         ),
@@ -244,9 +242,10 @@ def save_schedule(schedule, output_file, summary):
         f.write(f"Total Runs: {summary['total_runs']}\n")
         f.write(f"Balanced Design: {'Yes' if summary['balanced'] else 'No'}\n\n")
         
-        f.write(f"Factors:\n")
+        db_labels = [format_db_label(size) for size in summary['db_sizes']]
+        f.write("Factors:\n")
         f.write(f"  - I/O Methods: {', '.join(summary['io_methods'])}\n")
-        f.write(f"  - Database Sizes: {', '.join(summary['db_labels'])}\n")
+        f.write(f"  - Database Sizes: {', '.join(db_labels)}\n")
         f.write(f"  - Replicates per treatment: {summary['replicates_per_treatment']}\n\n")
         
         f.write(f"Time Estimate:\n")
@@ -268,9 +267,10 @@ def save_schedule(schedule, output_file, summary):
     print("EXPERIMENTAL DESIGN SUMMARY")
     print("=" * 70)
     print(f"Design Type: {summary['design_type']}")
+    db_labels = [format_db_label(size) for size in summary['db_sizes']]
     print(f"Total Runs: {summary['total_runs']}")
     print(f"I/O Methods: {', '.join(summary['io_methods'])}")
-    print(f"Database Sizes: {', '.join(summary['db_labels'])}")
+    print(f"Database Sizes: {', '.join(db_labels)}")
     print(f"Replicates: {summary['replicates_per_treatment']} per treatment")
     print(f"Estimated Duration: {summary['estimated_total_time_hours']:.1f} hours ({summary['estimated_total_time_hours']/24:.1f} days)")
     print("=" * 70)
@@ -280,7 +280,6 @@ def save_schedule(schedule, output_file, summary):
     preview_columns = [
         col for col in [
             'run_order',
-            'db_label',
             'db_size_gb',
             'db_name',
             'io_method',
@@ -379,20 +378,30 @@ def main():
     print(f"  Seed: {args.seed}")
     
     treatments = generate_treatment_combinations(io_methods, args.db_sizes, args.replicates)
-    schedule = generate_rcbd_schedule(treatments, blocking_factor='db_label', seed=args.seed)
+    schedule = generate_rcbd_schedule(treatments, blocking_factor='db_size_gb', seed=args.seed)
     schedule = add_execution_metadata(schedule, runtime_per_run=runtime_per_run, cooldown=cooldown)
     
     # Reorder columns for readability
     preferred_columns = [
         'run_order',
-        'db_label',
         'db_size_gb',
-        'db_name',
         'io_method',
         'replicate',
         'treatment_id',
+        'db_name',
         'block_id',
-        'design_type'
+        'design_type',
+        'estimated_runtime_min',
+        'cooldown_min',
+        'cumulative_time_min',
+        'cumulative_time_hours',
+        'status',
+        'actual_runtime_sec',
+        'execution_timestamp',
+        'qphh_result',
+        'power_result',
+        'throughput_result',
+        'notes'
     ]
     existing_columns = [col for col in preferred_columns if col in schedule.columns]
     remaining_columns = [col for col in schedule.columns if col not in existing_columns]
