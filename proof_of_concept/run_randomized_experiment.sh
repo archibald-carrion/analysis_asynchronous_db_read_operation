@@ -192,12 +192,26 @@ execute_run() {
     local replicate=$4
     local db_name=$5
     local treatment_id=$6
+    local cooldown_minutes=$7
+    
+    if [[ -z "$cooldown_minutes" ]]; then
+        cooldown_minutes=5
+    fi
+    
+    # Ensure cooldown is a non-negative integer
+    if ! [[ "$cooldown_minutes" =~ ^[0-9]+$ ]]; then
+        warning "Cooldown value '$cooldown_minutes' is invalid. Falling back to 5 minutes."
+        cooldown_minutes=5
+    fi
+    
+    local cooldown_seconds=$((cooldown_minutes * 60))
     
     section "Run $run_order of $TOTAL_RUNS"
     info "Treatment: $treatment_id"
     info "Database: ${db_size_gb}GB ($db_name)"
     info "I/O method: $io_method"
     info "Replicate: #$replicate"
+    info "Cooldown (min): $cooldown_minutes"
     
     # Switch database
     switch_database "$db_name"
@@ -212,8 +226,12 @@ execute_run() {
     clear_caches
     
     # Cooldown period (5 minutes)
-    info "Cooldown period: 5 minutes..."
-    sleep 300
+    if [[ $cooldown_seconds -gt 0 ]]; then
+        info "Cooldown period: ${cooldown_minutes} minute(s)..."
+        sleep "$cooldown_seconds"
+    else
+        info "Cooldown period skipped (0 minutes)"
+    fi
     
     # Set environment variables for run_tests.sh
     export IO_METHOD="$io_method"
@@ -412,7 +430,7 @@ execute_experiment() {
         fi
         
         # Execute the run
-        if execute_run "$run_order" "$db_size_gb" "$io_method" "$replicate" "$db_name" "$treatment_id"; then
+        if execute_run "$run_order" "$db_size_gb" "$io_method" "$replicate" "$db_name" "$treatment_id" "$cooldown"; then
             run_count=$((run_count + 1))
             completed_counter=$((completed_counter + 1))
             show_progress "$completed_counter" "$TOTAL_RUNS"
