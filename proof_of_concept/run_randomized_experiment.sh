@@ -30,29 +30,33 @@ Please generate it first:
         "
     fi
     
-    # Count total runs and pending runs
+    # Count total runs, pending runs, and failed runs
     local total_runs=$(tail -n +2 "$SCHEDULE_FILE" | wc -l | tr -d ' ')
     local pending_runs=$(tail -n +2 "$SCHEDULE_FILE" | grep -c "PENDING" || true)
-    local completed_runs=$((total_runs - pending_runs))
+    local failed_runs=$(tail -n +2 "$SCHEDULE_FILE" | grep -c "FAILED" || true)
+    local completed_runs=$(tail -n +2 "$SCHEDULE_FILE" | grep -c "COMPLETED" || true)
+    local runs_to_execute=$((pending_runs + failed_runs))
     
     log "Schedule file: $SCHEDULE_FILE"
     log "Total runs: $total_runs"
     log "Completed: $completed_runs"
     log "Pending: $pending_runs"
+    log "Failed (will retry): $failed_runs"
+    log "Runs to execute: $runs_to_execute"
     
-    if [[ $pending_runs -eq 0 ]]; then
+    if [[ $runs_to_execute -eq 0 ]]; then
         warning "All runs are already completed!"
         read -p "Do you want to reset and run again? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             reset_schedule
         else
-            error "No pending runs. Exiting."
+            error "No pending or failed runs. Exiting."
         fi
     fi
     
     export TOTAL_RUNS=$total_runs
-    export PENDING_RUNS=$pending_runs
+    export PENDING_RUNS=$runs_to_execute
     export COMPLETED_RUNS=$completed_runs
 }
 
@@ -427,6 +431,11 @@ execute_experiment() {
         if [[ "$status" == "COMPLETED" ]]; then
             info "Skipping run $run_order (already completed)"
             continue
+        fi
+        
+        # Log if retrying a failed run
+        if [[ "$status" == "FAILED" ]]; then
+            info "Retrying run $run_order (previously failed)"
         fi
         
         # Execute the run
