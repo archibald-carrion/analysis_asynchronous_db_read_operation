@@ -98,6 +98,19 @@ execute_query() {
     fi
 }
 
+# Ensure refresh function files exist (copy _fixed.sql to .sql if needed)
+ensure_refresh_files() {
+    for rf_num in 1 2; do
+        local fixed_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}_fixed.sql"
+        local target_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}.sql"
+        
+        if [[ -f "$fixed_file" ]] && [[ ! -f "$target_file" ]]; then
+            cp "$fixed_file" "$target_file"
+            info "Copied rf${rf_num}_fixed.sql to rf${rf_num}.sql"
+        fi
+    done
+}
+
 # Execute refresh function with robust error handling
 execute_refresh_function() {
     local run_id=$1
@@ -108,16 +121,20 @@ execute_refresh_function() {
     local refresh_num=$6
     local execution_order=$7
     
-    # Try fixed version first, then fall back to original
-    local refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}_fixed.sql"
-    if [[ ! -f "$refresh_file" ]]; then
-        refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
-    fi
+    # Always use _fixed.sql files - copy to .sql if needed
+    local fixed_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}_fixed.sql"
+    local refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
     
-    if [[ ! -f "$refresh_file" ]]; then
-        warning "Refresh function file $refresh_file not found, skipping"
+    # Ensure fixed file exists
+    if [[ ! -f "$fixed_file" ]]; then
+        warning "Refresh function file $fixed_file not found, skipping"
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
         return 1
+    fi
+    
+    # Copy fixed file to target file if needed
+    if [[ ! -f "$refresh_file" ]] || [[ "$fixed_file" -nt "$refresh_file" ]]; then
+        cp "$fixed_file" "$refresh_file"
     fi
     
     info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
@@ -222,13 +239,19 @@ execute_throughput_test() {
     done
     
     # Execute refresh stream in background (RF1 and RF2 pairs)
+    # According to TPC-H spec: refresh stream runs continuously in parallel with query streams
+    # It executes RF1→RF2 pairs repeatedly throughout the measurement interval
     (
         local execution_order=$refresh_start
-        for rf_pair in $(seq 1 $QUERY_STREAMS); do
+        local rf_pair=1
+        # Execute refresh pairs continuously - enough pairs to match query stream activity
+        # Typically one pair per query stream is minimum, but we run a bit more to ensure coverage
+        while [ $rf_pair -le $((QUERY_STREAMS * 2)) ]; do
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
             execution_order=$((execution_order + 1))
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
             execution_order=$((execution_order + 1))
+            rf_pair=$((rf_pair + 1))
         done
     ) &
     pids+=($!)
@@ -274,6 +297,248 @@ configure_postgresql() {
         sleep 5
     else
         info "PostgreSQL restart skipped (SKIP_POSTGRES_RESTART=${SKIP_POSTGRES_RESTART})"
+    fi
+}
+
+# Calculate QphH metric for a single run
+calculate_qphh() {
+    local complete_csv=$1
+    local refresh_csv=$2
+    local interval_csv=$3
+    
+    if [[ ! -f "$complete_csv" ]] || [[ ! -f "$refresh_csv" ]] || [[ ! -f "$interval_csv" ]]; then
+        echo "0.00"
+        return
+    fi
+    
+    local result
+    result=$(python3 - "$complete_csv" "$refresh_csv" "$interval_csv" "$SCALE_FACTOR" <<'PY'
+import csv
+import math
+import sys
+
+complete_path, refresh_path, interval_path, scale_factor_str = sys.argv[1:5]
+
+def parse_positive(value):
+    try:
+        v = float(value)
+        return v if v > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+def collect_times(path, expected_count):
+    times = []
+    with open(path, newline='') as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row.get('test_type', '').upper() != 'POWER':
+                continue
+            if row.get('stream_id', '') != '0':
+                continue
+            value = parse_positive(row.get('execution_time_seconds'))
+            if value is not None:
+                times.append(value)
+    return times if len(times) == expected_count else None
+
+try:
+    scale_factor = float(scale_factor_str)
+except (ValueError, TypeError):
+    scale_factor = 1.0
+
+power_times = collect_times(complete_path, 22)
+refresh_times = collect_times(refresh_path, 2)
+
+if not power_times or not refresh_times:
+    print("0.00")
+    sys.exit(0)
+
+with open(interval_path, newline='') as handle:
+    reader = csv.DictReader(handle)
+    interval_row = next((row for row in reader if row.get('test_type', '').upper() == 'THROUGHPUT'), None)
+
+if not interval_row:
+    print("0.00")
+    sys.exit(0)
+
+measurement = parse_positive(interval_row.get('measurement_interval_seconds'))
+stream_count_val = interval_row.get('stream_count')
+try:
+    stream_count = int(float(stream_count_val))
+except (ValueError, TypeError):
+    stream_count = 0
+
+if measurement is None or stream_count <= 0:
+    print("0.00")
+    sys.exit(0)
+
+# Geometric mean via log-sum to avoid overflow
+log_sum = sum(math.log(t) for t in power_times + refresh_times)
+geom_mean = math.exp(log_sum / 24.0)
+
+power_metric = (3600.0 * scale_factor) / geom_mean
+throughput_metric = ((stream_count * 22 * 3600.0) / measurement) * scale_factor
+
+if power_metric <= 0 or throughput_metric <= 0:
+    print("0.00")
+    sys.exit(0)
+
+qphh = math.sqrt(power_metric * throughput_metric)
+print(f"{qphh:.2f}")
+PY
+)
+    
+    if [[ -n "$result" ]] && [[ "$result" != "0.00" ]]; then
+        echo "$result"
+    else
+        echo "0.00"
+    fi
+}
+
+# Generate CSV with response variable (QphH) for all runs
+generate_response_variable_csv() {
+    local response_csv="$RESULTS_DIR/tpch_response_variable.csv"
+    
+    log "Calculating QphH metrics and generating response variable CSV..."
+    
+    # Initialize CSV header
+    echo "io_method,iteration,run_in_iteration,global_run_id,power_metric,throughput_metric,qphh_metric,scale_factor" > "$response_csv"
+    
+    local total_runs=$((ITERATIONS * RUNS_PER_ITERATION))
+    local calculated_count=0
+    local failed_count=0
+    
+    # Process each run
+    for iteration in $(seq 1 $ITERATIONS); do
+        for run_in_iteration in $(seq 1 $RUNS_PER_ITERATION); do
+            local run_id=$(( (iteration - 1) * RUNS_PER_ITERATION + run_in_iteration ))
+            
+            # Create temporary CSV files filtered for this specific run
+            local temp_complete=$(mktemp)
+            local temp_refresh=$(mktemp)
+            local temp_interval=$(mktemp)
+            
+            # Filter CSVs for this run and add headers
+            (head -1 "$CSV_OUTPUT" && grep "^${IO_METHOD},${iteration},${run_in_iteration},${run_id}," "$CSV_OUTPUT") > "$temp_complete" 2>/dev/null || true
+            (head -1 "$REFRESH_CSV" && grep "^${IO_METHOD},${iteration},${run_in_iteration},${run_id}," "$REFRESH_CSV") > "$temp_refresh" 2>/dev/null || true
+            (head -1 "$INTERVAL_CSV" && grep "^${IO_METHOD},${iteration},${run_in_iteration},${run_id}," "$INTERVAL_CSV") > "$temp_interval" 2>/dev/null || true
+            
+            # Calculate QphH for this run (which internally calculates power and throughput)
+            local qphh_result=$(calculate_qphh "$temp_complete" "$temp_refresh" "$temp_interval")
+            
+            # Extract power and throughput metrics (calculate them separately for completeness)
+            local power_metric="0.00"
+            local throughput_metric="0.00"
+            
+            # If we have valid data, calculate power and throughput separately
+            if [[ "$qphh_result" != "0.00" ]] && [[ -s "$temp_complete" ]] && [[ -s "$temp_refresh" ]] && [[ -s "$temp_interval" ]]; then
+                # Calculate power metric using Python
+                power_metric=$(python3 - "$temp_complete" "$temp_refresh" "$SCALE_FACTOR" <<'PY'
+import csv
+import math
+import sys
+
+complete_path, refresh_path, scale_factor_str = sys.argv[1:4]
+
+def parse_positive(value):
+    try:
+        v = float(value)
+        return v if v > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+def collect_times(path):
+    times = []
+    with open(path, newline='') as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if row.get('test_type', '').upper() != 'POWER':
+                continue
+            if row.get('stream_id', '') != '0':
+                continue
+            value = parse_positive(row.get('execution_time_seconds'))
+            if value is not None:
+                times.append(value)
+    return times
+
+try:
+    scale_factor = float(scale_factor_str)
+except (ValueError, TypeError):
+    scale_factor = 1.0
+
+power_times = collect_times(complete_path)
+refresh_times = collect_times(refresh_path)
+
+if len(power_times) != 22 or len(refresh_times) != 2:
+    print("0.00")
+    sys.exit(0)
+
+log_sum = sum(math.log(t) for t in power_times + refresh_times)
+geom_mean = math.exp(log_sum / 24.0)
+power_metric = (3600.0 * scale_factor) / geom_mean
+print(f"{power_metric:.2f}")
+PY
+)
+                
+                # Calculate throughput metric
+                throughput_metric=$(python3 - "$temp_interval" "$QUERY_STREAMS" "$SCALE_FACTOR" <<'PY'
+import csv
+import sys
+
+interval_path, stream_count_str, scale_factor_str = sys.argv[1:4]
+
+def parse_positive(value):
+    try:
+        v = float(value)
+        return v if v > 0 else None
+    except (ValueError, TypeError):
+        return None
+
+try:
+    stream_count = int(float(stream_count_str))
+    scale_factor = float(scale_factor_str)
+except (ValueError, TypeError):
+    stream_count = 0
+    scale_factor = 1.0
+
+with open(interval_path, newline='') as handle:
+    reader = csv.DictReader(handle)
+    interval_row = next((row for row in reader if row.get('test_type', '').upper() == 'THROUGHPUT'), None)
+
+if not interval_row:
+    print("0.00")
+    sys.exit(0)
+
+measurement = parse_positive(interval_row.get('measurement_interval_seconds'))
+
+if measurement is None or stream_count <= 0:
+    print("0.00")
+    sys.exit(0)
+
+throughput_metric = ((stream_count * 22 * 3600.0) / measurement) * scale_factor
+print(f"{throughput_metric:.2f}")
+PY
+)
+            fi
+            
+            if [[ "$qphh_result" != "0.00" ]]; then
+                calculated_count=$((calculated_count + 1))
+            else
+                failed_count=$((failed_count + 1))
+                warning "Failed to calculate QphH for Iteration $iteration, Run $run_in_iteration (Run ID: $run_id)"
+            fi
+            
+            # Write to response CSV
+            echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${power_metric},${throughput_metric},${qphh_result},${SCALE_FACTOR}" >> "$response_csv"
+            
+            # Cleanup temp files
+            rm -f "$temp_complete" "$temp_refresh" "$temp_interval"
+        done
+    done
+    
+    log "Response variable CSV generated: $response_csv"
+    log "Successfully calculated QphH for $calculated_count out of $total_runs runs"
+    if [[ $failed_count -gt 0 ]]; then
+        warning "$failed_count runs failed to calculate QphH (check input CSVs)"
     fi
 }
 
@@ -340,6 +605,9 @@ main() {
     initialize_csv
     test_postgres_connection
     
+    # Ensure refresh function files are available
+    ensure_refresh_files
+    
     # Configure PostgreSQL for this I/O method
     configure_postgresql "$IO_METHOD"
     
@@ -364,11 +632,16 @@ main() {
     done
     
     generate_tpch_summary
+    
+    # Calculate QphH metrics and generate response variable CSV
+    generate_response_variable_csv
+    
     log "Complete TPC-H benchmark execution finished!"
     log "Total runs executed: $((ITERATIONS * RUNS_PER_ITERATION))"
     log "Query results: $CSV_OUTPUT"
     log "Refresh results: $REFRESH_CSV"
     log "Interval results: $INTERVAL_CSV"
+    log "Response variable (QphH): ${RESULTS_DIR}/tpch_response_variable.csv"
 }
 
 # Cleanup
