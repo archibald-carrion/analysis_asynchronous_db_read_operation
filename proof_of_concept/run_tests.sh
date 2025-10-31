@@ -79,8 +79,8 @@ execute_query() {
     
     # Calculate timeout based on scale factor:
     # Base: 300s (5min) for 1GB
-    # Additional: 30s per GB
-    # Examples: 1GB=300s, 10GB=600s (10min), 100GB=3300s (~55min, capped at 3600s)
+    # Additional: 60s per GB (more generous for complex queries like Q2, Q7, Q9, Q17, Q20)
+    # Examples: 1GB=300s, 10GB=900s (15min), 100GB=6300s (~105min, capped at 7200s)
     local scale_factor_num="${SCALE_FACTOR:-1}"
     # Convert to integer for bash arithmetic (handle decimal by truncating)
     # Handle both "10" and "10.0" formats
@@ -88,12 +88,12 @@ execute_query() {
     scale_factor_num="${scale_factor_num%.*}"     # Truncate decimal part
     scale_factor_num="${scale_factor_num:-1}"     # Default to 1 if empty
     
-    # Calculate: base 300s + 30s per GB
-    local query_timeout=$((300 + scale_factor_num * 30))
+    # Calculate: base 300s + 60s per GB (doubled from 30s to handle complex queries)
+    local query_timeout=$((300 + scale_factor_num * 60))
     
-    # Cap at 3600s (1 hour) for very large databases
-    if [[ $query_timeout -gt 3600 ]]; then
-        query_timeout=3600
+    # Cap at 7200s (2 hours) for very large databases (100GB queries can be very slow)
+    if [[ $query_timeout -gt 7200 ]]; then
+        query_timeout=7200
     fi
     
     # Ensure minimum of 300s
