@@ -5,9 +5,11 @@
 # - No reinstala PostgreSQL si ya lo tienes
 #
 # Uso:
-#   ./run_setup.sh                # modo normal
+#   ./run_setup.sh                # modo normal (crea DB, datos y queries)
 #   ./run_setup.sh --clean        # limpia y recompila tpch-kit
+#   ./run_setup.sh --queries-only # solo genera queries Q1-Q22 (NO toca la DB)
 #   DB_NAME=tpch DB_USER=tpch_user DB_PASSWORD=xxx SCALE_FACTOR=40 ./run_setup.sh
+#   SCALE_FACTOR=0.01 DB_NAME=tpch_db_10mb ./run_setup.sh --queries-only
 
 set -euo pipefail
 
@@ -21,10 +23,12 @@ PGVER="${PGVER:-18}"                    # para mensajes solamente
 # ---- Flags ----
 CLEAN=false
 LOW_MEMORY=false
+QUERIES_ONLY=false
 for arg in "${@:-}"; do
   case "$arg" in
     --clean) CLEAN=true ;;
     --low-memory) LOW_MEMORY=true ;;
+    --queries-only) QUERIES_ONLY=true ;;
   esac
 done
 
@@ -195,6 +199,18 @@ generate_queries() {
 main() {
   log "Starting TPC-H setup"
   log "Scale Factor: ${SCALE_FACTOR}GB | PostgreSQL: ${PGVER}"
+
+  if $QUERIES_ONLY; then
+    log "QUERIES-ONLY mode: Only generating queries (database and data are preserved)"
+    
+    # Only setup tpch-kit and generate queries
+    setup_tpch_tools
+    generate_queries
+    
+    log "Queries generation complete!"
+    log "Queries saved in: $SCRIPT_DIR/tpch_queries/"
+    return 0
+  fi
 
   # 1) Asegura repo PGDG consistente (evita conflicto de Signed-By)
   ensure_pgdg_repo
