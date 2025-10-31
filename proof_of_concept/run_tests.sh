@@ -143,8 +143,34 @@ execute_refresh_function() {
     local start_time=$(date +%s.%N)
     local output_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_rf${refresh_num}.txt"
     
-    # Execute refresh function with timeout
-    if timeout 120s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$refresh_file" > "$output_file" 2>&1; then
+    # Calculate timeout based on scale factor: 
+    # Base: 120s (2min) for 1GB
+    # Additional: 45s per GB (approximately)
+    # Examples: 1GB=120s, 10GB=570s (~9.5min), 100GB=4620s (~77min, capped at 3600s)
+    local scale_factor_num="${SCALE_FACTOR:-1}"
+    # Convert to integer for bash arithmetic (handle decimal by truncating)
+    # Handle both "10" and "10.0" formats
+    scale_factor_num="${scale_factor_num//.0/}"  # Remove .0 suffix
+    scale_factor_num="${scale_factor_num%.*}"     # Truncate decimal part
+    scale_factor_num="${scale_factor_num:-1}"     # Default to 1 if empty
+    
+    # Calculate: base 120s + 45s per GB
+    local timeout_seconds=$((120 + scale_factor_num * 45))
+    
+    # Cap at 3600s (1 hour) for very large databases
+    if [[ $timeout_seconds -gt 3600 ]]; then
+        timeout_seconds=3600
+    fi
+    
+    # Ensure minimum of 120s
+    if [[ $timeout_seconds -lt 120 ]]; then
+        timeout_seconds=120
+    fi
+    
+    info "Using timeout of ${timeout_seconds}s for RF${refresh_num} (SF=${scale_factor_num}GB)"
+    
+    # Execute refresh function with dynamic timeout
+    if timeout ${timeout_seconds}s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$refresh_file" > "$output_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
         
