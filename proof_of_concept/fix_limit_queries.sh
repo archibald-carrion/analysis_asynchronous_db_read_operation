@@ -21,14 +21,17 @@ for query_file in "$QUERIES_DIR"/q*.sql; do
         continue
     fi
     
-    # Check if file has LIMIT -1
-    if grep -q "LIMIT.*-1" "$query_file"; then
+    # Check if file has LIMIT -1 (case-insensitive)
+    if grep -qi "limit.*-1" "$query_file"; then
         echo "  Fixing: $(basename "$query_file")"
         
-        # Remove LIMIT -1 at end of line (with optional semicolon)
-        sed -i 's/[[:space:]]*LIMIT[[:space:]]*-1[[:space:]]*;*[[:space:]]*$/;/' "$query_file"
-        # Remove LIMIT -1 in middle of line
-        sed -i 's/[[:space:]]*LIMIT[[:space:]]*-1[[:space:]]*$//' "$query_file"
+        # Use extended regex (-E) and case-insensitive pattern to match both LIMIT and limit
+        # First: Remove standalone LIMIT -1 lines (including semicolon if present)
+        sed -i -E '/^[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/d' "$query_file"
+        # Second: Replace LIMIT -1 at end of line (with optional semicolon) with just semicolon
+        sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/;/' "$query_file"
+        # Third: Remove any remaining LIMIT -1 in middle of line
+        sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*//' "$query_file"
         
         ((fixed_count++))
     fi

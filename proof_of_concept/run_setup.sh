@@ -177,10 +177,15 @@ generate_queries() {
   for i in $(seq 1 22); do
     "$DSS_CONFIG/qgen" -v -c -s "$SCALE_FACTOR" "$i" > "$SCRIPT_DIR/tpch_queries/q${i}.sql"
     
-    # Fix: Remove "LIMIT -1" which PostgreSQL doesn't accept
+    # Fix: Remove "LIMIT -1" which PostgreSQL doesn't accept (case-insensitive)
     # TPC-H :n -1 directive means "no limit", but some qgen versions generate "LIMIT -1"
-    sed -i 's/[[:space:]]*LIMIT[[:space:]]*-1[[:space:]]*;*[[:space:]]*$/;/' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
-    sed -i 's/[[:space:]]*LIMIT[[:space:]]*-1[[:space:]]*$//' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
+    # Use extended regex (-E) and case-insensitive pattern to match both LIMIT and limit
+    # First: Remove standalone LIMIT -1 lines (including semicolon if present)
+    sed -i -E '/^[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/d' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
+    # Second: Replace LIMIT -1 at end of line (with optional semicolon) with just semicolon
+    sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/;/' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
+    # Third: Remove any remaining LIMIT -1 in middle of line
+    sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*//' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
   done
   log "Queries saved in $SCRIPT_DIR/tpch_queries/ (fixed LIMIT -1 if present)"
   
