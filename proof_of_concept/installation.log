@@ -849,3 +849,39 @@ ANALYZE
 [2025-10-11 02:24:12] User: tpch_user
 [2025-10-11 02:24:12] Scale Factor: 1GB
 [2025-10-11 02:24:12] Check /home/debian/analysis_asynchronous_db_read_operation/proof_of_concept/installation.log for detailed logs
+[0;32m[2025-10-31 02:01:32][0m Starting TPC-H setup
+[0;32m[2025-10-31 02:01:32][0m Scale Factor: 1GB | PostgreSQL: 18
+[0;32m[2025-10-31 02:01:32][0m QUERIES-ONLY mode: Only generating queries (database and data are preserved)
+[0;32m[2025-10-31 02:01:32][0m Updating tpch-kit...
+Already up to date.
+[0;32m[2025-10-31 02:01:32][0m Building dbgen/qgen for Linux + PostgreSQL
+make: Nothing to be done for 'all'.
+[0;32m[2025-10-31 02:01:32][0m Generating queries Q1..Q22 (SF=1)
+[0;32m[2025-10-31 02:01:33][0m Queries saved in /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_queries/ (fixed LIMIT -1 if present)
+[0;32m[2025-10-31 02:01:33][0m Refresh Functions (RF1/RF2) found: rf1_fixed.sql, rf2_fixed.sql
+[0;32m[2025-10-31 02:01:33][0m Queries generation complete!
+[0;32m[2025-10-31 02:01:33][0m Queries saved in: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_queries/
+[0;32m[2025-10-31 02:04:18][0m Starting TPC-H setup
+[0;32m[2025-10-31 02:04:18][0m Scale Factor: 1GB | PostgreSQL: 18
+[0;32m[2025-10-31 02:04:18][0m QUERIES-ONLY mode: Only generating queries (database and data are preserved)
+[0;32m[2025-10-31 02:04:18][0m Updating tpch-kit...
+Already up to date.
+[0;32m[2025-10-31 02:04:18][0m Building dbgen/qgen for Linux + PostgreSQL
+make: Nothing to be done for 'all'.
+[0;32m[2025-10-31 02:04:19][0m Generating queries Q1..Q22 (SF=1)
+[0;32m[2025-10-31 02:04:19][0m Queries saved in /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_queries/ (fixed LIMIT -1 if present)
+[0;32m[2025-10-31 02:04:19][0m Refresh Functions (RF1/RF2) found: rf1_fixed.sql, rf2_fixed.sql
+[0;32m[2025-10-31 02:04:19][0m Queries generation complete!
+[0;32m[2025-10-31 02:04:19][0m Queries saved in: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_queries/
+[0;32m[2025-10-31 02:09:29][0m Starting TPC-H setup
+[0;32m[2025-10-31 02:09:29][0m Scale Factor: 1GB | PostgreSQL: 18
+[0;32m[2025-10-31 02:09:29][0m QUERIES-ONLY mode: Only generating queries (database and data are preserved)
+[0;32m[2025-10-31 02:09:29][0m Updating tpch-kit...
+Already up to date.
+[0;32m[2025-10-31 02:09:29][0m Building dbgen/qgen for Linux + PostgreSQL
+make: Nothing to be done for 'all'.
+[0;32m[2025-10-31 02:09:29][0m Generating queries Q1..Q22 (SF=1)
+[0;32m[2025-10-31 02:09:30][0m Queries saved in /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_queries/ (fixed LIMIT -1 if present)
+[0;32m[2025-10-31 02:09:30][0m Refresh Functions (RF1/RF2) found: rf1_fixed.sql, rf2_fixed.sql
+[0;32m[2025-10-31 02:09:30][0m Queries generation complete!
+[0;32m[2025-10-31 02:09:30][0m Queries saved in: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/tpch_queries/

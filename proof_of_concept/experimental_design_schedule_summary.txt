@@ -1,0 +1,33 @@
+======================================================================
+EXPERIMENTAL DESIGN SUMMARY
+======================================================================
+Generated: 2025-10-31 02:10:04
+
+Design Type: RCBD
+Total Runs: 72
+Balanced Design: Yes
+
+Factors:
+  - I/O Methods: iouring, bgworkers, sync
+  - Database Sizes: 10MB, 10GB, 1GB, 100MB
+  - Replicates per treatment: 6
+
+Time Estimate:
+  - Total experiment duration: 37.2 hours
+  - Approximately 1.6 days
+
+Treatment Allocation:
+  - 10MB + bgworkers: 6 runs
+  - 10MB + iouring: 6 runs
+  - 10MB + sync: 6 runs
+  - 100MB + bgworkers: 6 runs
+  - 100MB + iouring: 6 runs
+  - 100MB + sync: 6 runs
+  - 1GB + bgworkers: 6 runs
+  - 1GB + iouring: 6 runs
+  - 1GB + sync: 6 runs
+  - 10GB + bgworkers: 6 runs
+  - 10GB + iouring: 6 runs
+  - 10GB + sync: 6 runs
+
+======================================================================
