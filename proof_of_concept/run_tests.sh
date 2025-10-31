@@ -77,8 +77,34 @@ execute_query() {
     local result_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_q${query_num}.txt"
     local start_time=$(date +%s.%N)
     
-    # Execute query with timeout
-    if timeout 300s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$query_file" > "$result_file" 2>&1; then
+    # Calculate timeout based on scale factor:
+    # Base: 300s (5min) for 1GB
+    # Additional: 30s per GB
+    # Examples: 1GB=300s, 10GB=600s (10min), 100GB=3300s (~55min, capped at 3600s)
+    local scale_factor_num="${SCALE_FACTOR:-1}"
+    # Convert to integer for bash arithmetic (handle decimal by truncating)
+    # Handle both "10" and "10.0" formats
+    scale_factor_num="${scale_factor_num//.0/}"  # Remove .0 suffix
+    scale_factor_num="${scale_factor_num%.*}"     # Truncate decimal part
+    scale_factor_num="${scale_factor_num:-1}"     # Default to 1 if empty
+    
+    # Calculate: base 300s + 30s per GB
+    local query_timeout=$((300 + scale_factor_num * 30))
+    
+    # Cap at 3600s (1 hour) for very large databases
+    if [[ $query_timeout -gt 3600 ]]; then
+        query_timeout=3600
+    fi
+    
+    # Ensure minimum of 300s
+    if [[ $query_timeout -lt 300 ]]; then
+        query_timeout=300
+    fi
+    
+    info "Using timeout of ${query_timeout}s for Q${query_num} (SF=${scale_factor_num}GB)"
+    
+    # Execute query with dynamic timeout
+    if timeout ${query_timeout}s psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$query_file" > "$result_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
         
