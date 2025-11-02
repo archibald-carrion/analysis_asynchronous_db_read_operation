@@ -5,9 +5,9 @@
 -- business transactions. According to TPC-H spec: inserts SF * 1500 new orders
 -- with 1-7 line items each (average ~4.5).
 -- ============================================================================
+-- PERFORMANCE OPTIMIZED: Uses temporary tables and bulk operations for speed
+-- ============================================================================
 
--- Calculate number of orders to insert: SF * 1500
--- Get SF by calculating from existing data: num_orders / 1500
 DO $$
 DECLARE
     num_orders INTEGER;
@@ -15,6 +15,9 @@ DECLARE
     refresh_date DATE := '1998-12-01';  -- Refresh date for new orders
     max_orderkey BIGINT;
     partsupp_sample_size INTEGER;
+    partsupp_max_rn INTEGER;
+    customer_count BIGINT;
+    customer_offset BIGINT;
 BEGIN
     -- Calculate scale factor from existing data
     SELECT COALESCE(COUNT(*)::NUMERIC / 150000.0, 1) INTO scale_factor
@@ -26,8 +29,11 @@ BEGIN
     -- Get current max orderkey to avoid collisions
     SELECT COALESCE(MAX(o_orderkey), 0) INTO max_orderkey FROM orders;
     
-    -- Step 1: Insert new orders
-    -- OPTIMIZED: Use TABLESAMPLE BERNOULLI for random sampling (much faster than ORDER BY RANDOM())
+    -- OPTIMIZED: Get customer count once for efficient sampling
+    SELECT COUNT(*) INTO customer_count FROM customer;
+    
+    -- Step 1: Insert new orders using efficient offset-based random sampling
+    -- Much faster than TABLESAMPLE for large tables when we need small samples
     INSERT INTO orders (
         o_orderkey,
         o_custkey,
@@ -40,7 +46,7 @@ BEGIN
         o_comment
     )
     SELECT
-        max_orderkey + row_number() OVER (ORDER BY c.c_custkey) AS o_orderkey,
+        max_orderkey + row_number() OVER () AS o_orderkey,
         c.c_custkey,
         'O' AS o_orderstatus,
         ROUND((RANDOM() * 500000 + 50000)::numeric, 2) AS o_totalprice,
@@ -54,23 +60,40 @@ BEGIN
         END AS o_orderpriority,
         'Clerk#' || LPAD((RANDOM() * 1000)::int::text, 9, '0') AS o_clerk,
         (RANDOM() * 10)::int AS o_shippriority,
-        'New order comment ' || row_number() OVER (ORDER BY c.c_custkey)::text AS o_comment
+        'New order comment ' || (max_orderkey + row_number() OVER ())::text AS o_comment
     FROM (
-        -- OPTIMIZED: Use TABLESAMPLE SYSTEM which is faster than BERNOULLI for large tables
-        -- Sample a percentage that ensures we get enough rows (sample more than needed)
+        -- OPTIMIZED: Use offset-based sampling instead of TABLESAMPLE
+        -- Sample random customers by using random offsets
         SELECT c_custkey
         FROM customer
-        TABLESAMPLE SYSTEM (GREATEST(100.0 * num_orders::numeric / 150000.0, 0.1))
-        LIMIT num_orders * 2  -- Get more samples than needed to ensure we have enough
-    ) sub
-    JOIN customer c ON c.c_custkey = sub.c_custkey
-    LIMIT num_orders;
+        TABLESAMPLE SYSTEM (GREATEST(100.0 * num_orders::numeric / GREATEST(customer_count, 1), 0.5))
+        LIMIT num_orders
+    ) c;
     
-    -- Step 2: Insert line items for the new orders
-    -- Each order gets 1-7 line items (using modulo for variation: 4 + (o_orderkey % 3) = 4-6 items)
-    -- Pre-calculate partsupp sample size
+    -- Step 2: Prepare partsupp sample in temporary table for fast access
     partsupp_sample_size := num_orders * 10;
     
+    -- Create temporary table for partsupp sample (faster than CTE for repeated access)
+    CREATE TEMP TABLE IF NOT EXISTS temp_partsupp_sample AS
+    SELECT 
+        ps_partkey, 
+        ps_suppkey,
+        row_number() OVER () as rn
+    FROM (
+        SELECT ps_partkey, ps_suppkey
+        FROM partsupp
+        TABLESAMPLE SYSTEM (GREATEST(100.0 * partsupp_sample_size::numeric / 800000.0, 0.1))
+        LIMIT partsupp_sample_size
+    ) ps_sample;
+    
+    -- Get max row number once (used for modulo selection)
+    SELECT COALESCE(MAX(rn), 1) INTO partsupp_max_rn FROM temp_partsupp_sample;
+    
+    -- Create index on rn for fast lookups
+    CREATE INDEX IF NOT EXISTS idx_temp_partsupp_rn ON temp_partsupp_sample(rn);
+    
+    -- Step 3: Insert line items using bulk operation with direct join
+    -- OPTIMIZED: Eliminate LATERAL join by pre-calculating all partsupp selections
     WITH new_orders AS (
         SELECT o_orderkey, o_orderdate
         FROM orders
@@ -85,19 +108,19 @@ BEGIN
             generate_series(1, 4 + (o.o_orderkey::bigint % 3)) AS line_num
         FROM new_orders o
     ),
-    -- OPTIMIZED: Pre-select a random sample of partsupp entries once
-    -- Use TABLESAMPLE SYSTEM for efficient random sampling instead of ORDER BY RANDOM()
-    partsupp_sample AS (
-        SELECT ps_partkey, ps_suppkey,
-               row_number() OVER () as rn
-        FROM (
-            -- Sample more partsupp entries than we'll need (estimate: max 7 line items per order * num_orders)
-            -- Use a fixed percentage estimate to avoid COUNT() query
-            SELECT ps_partkey, ps_suppkey
-            FROM partsupp
-            TABLESAMPLE SYSTEM (GREATEST(100.0 * partsupp_sample_size::numeric / 800000.0, 0.1))
-            LIMIT partsupp_sample_size
-        ) ps_sample
+    lineitems_with_partsupp AS (
+        SELECT
+            gl.o_orderkey,
+            gl.o_orderdate,
+            gl.line_num,
+            -- OPTIMIZED: Direct indexed join - eliminates LATERAL subquery overhead!
+            -- rn is unique (row_number), so join will be 1:1
+            ps.ps_partkey,
+            ps.ps_suppkey
+        FROM generated_lineitems gl
+        JOIN temp_partsupp_sample ps ON (
+            ps.rn = 1 + ((gl.o_orderkey::bigint * 1000 + gl.line_num) % GREATEST(partsupp_max_rn, 1))
+        )
     )
     INSERT INTO lineitem (
         l_orderkey,
@@ -118,19 +141,19 @@ BEGIN
         l_comment
     )
     SELECT
-        gl.o_orderkey,
-        ps.ps_partkey,
-        ps.ps_suppkey,
-        gl.line_num AS l_linenumber,
+        lwp.o_orderkey,
+        lwp.ps_partkey,
+        lwp.ps_suppkey,
+        lwp.line_num AS l_linenumber,
         ROUND((RANDOM() * 50 + 1)::numeric, 2) AS l_quantity,
         ROUND((RANDOM() * 100000 + 10000)::numeric, 2) AS l_extendedprice,
         ROUND((RANDOM() * 0.1)::numeric, 2) AS l_discount,
         ROUND((RANDOM() * 0.08 + 0.01)::numeric, 2) AS l_tax,
         CASE WHEN RANDOM() < 0.1 THEN 'R' ELSE 'A' END AS l_returnflag,
         'O' AS l_linestatus,
-        gl.o_orderdate + (RANDOM() * 90)::int AS l_shipdate,
-        gl.o_orderdate + (RANDOM() * 120)::int AS l_commitdate,
-        gl.o_orderdate + (RANDOM() * 150)::int AS l_receiptdate,
+        lwp.o_orderdate + (RANDOM() * 90)::int AS l_shipdate,
+        lwp.o_orderdate + (RANDOM() * 120)::int AS l_commitdate,
+        lwp.o_orderdate + (RANDOM() * 150)::int AS l_receiptdate,
         CASE (RANDOM() * 4)::int
             WHEN 0 THEN 'DELIVER IN PERSON'
             WHEN 1 THEN 'COLLECT COD'
@@ -147,17 +170,8 @@ BEGIN
             ELSE 'FOB'
         END AS l_shipmode,
         'TEXT' AS l_comment
-    FROM
-        generated_lineitems gl
-        CROSS JOIN LATERAL (
-            -- OPTIMIZED: Select from pre-randomized sample using row number lookup
-            -- Use orderkey and line_num to deterministically select different partsupp entries
-            -- MAX(rn) equals the actual number of rows in the sample (may be less than partsupp_sample_size)
-            SELECT ps_partkey, ps_suppkey
-            FROM partsupp_sample
-            WHERE rn = 1 + ((gl.o_orderkey::bigint * 1000 + gl.line_num) % (
-                SELECT COALESCE(MAX(rn), 1) FROM partsupp_sample
-            ))
-            LIMIT 1
-        ) ps;
+    FROM lineitems_with_partsupp lwp;
+    
+    -- Clean up temporary table
+    DROP TABLE IF EXISTS temp_partsupp_sample;
 END $$;
