@@ -118,6 +118,6 @@ else
         clear
         show_activity
         sleep 2
-    fi
+    done
 fi
 
