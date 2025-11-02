@@ -20,21 +20,17 @@ DECLARE
     customer_offset BIGINT;
 BEGIN
     -- Calculate scale factor from existing data
-    RAISE NOTICE 'RF1: Starting execution...';
     SELECT COALESCE(COUNT(*)::NUMERIC / 150000.0, 1) INTO scale_factor
     FROM orders;
     
     -- Calculate number of orders: SF * 1500
     num_orders := GREATEST(1, FLOOR(scale_factor * 1500)::INTEGER);
-    RAISE NOTICE 'RF1: Scale factor = %, Number of orders to insert = %', scale_factor, num_orders;
     
     -- Get current max orderkey to avoid collisions
     SELECT COALESCE(MAX(o_orderkey), 0) INTO max_orderkey FROM orders;
-    RAISE NOTICE 'RF1: Max orderkey = %', max_orderkey;
     
     -- OPTIMIZED: Get customer count once for efficient sampling
     SELECT COUNT(*) INTO customer_count FROM customer;
-    RAISE NOTICE 'RF1: Step 1/3 - Inserting % orders...', num_orders;
     
     -- Step 1: Insert new orders using efficient offset-based random sampling
     -- Much faster than TABLESAMPLE for large tables when we need small samples
@@ -74,11 +70,8 @@ BEGIN
         LIMIT num_orders
     ) c;
     
-    RAISE NOTICE 'RF1: Step 1/3 - Orders inserted successfully';
-    
     -- Step 2: Prepare partsupp sample in temporary table for fast access
     partsupp_sample_size := num_orders * 10;
-    RAISE NOTICE 'RF1: Step 2/3 - Creating partsupp sample (size = %)...', partsupp_sample_size;
     
     -- Create temporary table for partsupp sample (faster than CTE for repeated access)
     CREATE TEMP TABLE IF NOT EXISTS temp_partsupp_sample AS
@@ -98,10 +91,8 @@ BEGIN
     
     -- Create index on rn for fast lookups
     CREATE INDEX IF NOT EXISTS idx_temp_partsupp_rn ON temp_partsupp_sample(rn);
-    RAISE NOTICE 'RF1: Step 2/3 - Partsupp sample created (max_rn = %)', partsupp_max_rn;
     
     -- Step 3: Insert line items using bulk operation with direct join
-    RAISE NOTICE 'RF1: Step 3/3 - Inserting lineitems...';
     -- OPTIMIZED: Eliminate LATERAL join by pre-calculating all partsupp selections
     WITH new_orders AS (
         SELECT o_orderkey, o_orderdate
@@ -183,5 +174,4 @@ BEGIN
     
     -- Clean up temporary table
     DROP TABLE IF EXISTS temp_partsupp_sample;
-    RAISE NOTICE 'RF1: Completed successfully!';
 END $$;
