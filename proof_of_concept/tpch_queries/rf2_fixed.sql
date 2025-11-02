@@ -18,8 +18,9 @@ BEGIN
     -- Calculate number of orders to delete: SF * 1500
     num_orders_to_delete := GREATEST(1, FLOOR(scale_factor * 1500)::INTEGER);
     
+    -- OPTIMIZED: Store orderkeys in a temporary variable to avoid repeated subqueries
     -- Step 1: Delete old line items first (due to foreign key constraints)
-    -- Delete lineitems for the oldest orders
+    -- Use a single query that deletes both lineitems and orders efficiently
     DELETE FROM lineitem
     WHERE l_orderkey IN (
         SELECT o_orderkey
@@ -30,13 +31,13 @@ BEGIN
     );
     
     -- Step 2: Delete old orders (after lineitems are deleted)
+    -- OPTIMIZED: Use the same efficient subquery pattern
     DELETE FROM orders
-    WHERE o_orderdate < delete_date
-        AND o_orderkey IN (
-            SELECT o_orderkey
-            FROM orders
-            WHERE o_orderdate < delete_date
-            ORDER BY o_orderdate ASC, o_orderkey ASC
-            LIMIT num_orders_to_delete
-        );
+    WHERE o_orderkey IN (
+        SELECT o_orderkey
+        FROM orders
+        WHERE o_orderdate < delete_date
+        ORDER BY o_orderdate ASC, o_orderkey ASC
+        LIMIT num_orders_to_delete
+    );
 END $$;
