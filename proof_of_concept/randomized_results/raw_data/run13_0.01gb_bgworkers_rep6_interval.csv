@@ -1,2 +1,0 @@
-io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time
-bgworkers,1,1,1,THROUGHPUT,2,52.694425527,1761893314.626461267,1761893367.320886794
