@@ -138,13 +138,18 @@ execute_refresh_function() {
     fi
     
     info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
+    info "To monitor progress, run: DB_NAME=$DB_NAME ./monitor_rf_progress.sh"
     
     export PGPASSWORD="$DB_PASSWORD"
     local start_time=$(date +%s.%N)
     local output_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_rf${refresh_num}.txt"
     
     # Execute refresh function without timeout (let it run until completion)
-    if psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$refresh_file" > "$output_file" 2>&1; then
+    # Add verbose timing for debugging
+    if psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
+        -c "\set VERBOSITY verbose" \
+        -c "\timing on" \
+        -f "$refresh_file" > "$output_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
         
