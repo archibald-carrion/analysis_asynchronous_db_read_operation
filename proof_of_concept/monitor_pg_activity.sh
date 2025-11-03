@@ -4,6 +4,9 @@
 
 DB_NAME="${DB_NAME:-tpch_db_10gb}"
 DB_USER="${DB_USER:-tpch_user}"
+DB_PASSWORD="${DB_PASSWORD:-tpch_password_123}"
+
+export PGPASSWORD="$DB_PASSWORD"
 
 echo "=== PostgreSQL Activity Monitor ==="
 echo "Database: $DB_NAME"
@@ -120,4 +123,3 @@ else
         sleep 2
     done
 fi
-
