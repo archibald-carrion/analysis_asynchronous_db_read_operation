@@ -13,8 +13,8 @@ set -e
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$SCRIPT_DIR/cleanup.log"
-DB_NAME="tpch_db"
-DB_USER="tpch_user"
+DB_NAME="${DB_NAME:-tpch_db}"
+DB_USER="${DB_USER:-tpch_user}"
 
 # Parse command line arguments
 FULL_CLEAN=false
