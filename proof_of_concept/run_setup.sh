@@ -160,15 +160,27 @@ generate_and_load_data() {
       -c "\copy $t FROM '${file}' WITH (FORMAT csv, DELIMITER '|')" >>"$LOG_FILE" 2>&1
   done
 
-  # Aplicar restricciones y claves foráneas (dss.ri)
-  if [[ -f "$DSS_CONFIG/dss.ri" ]]; then
-    log "Applying referential integrity (dss.ri)"
-    if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-      -f "$DSS_CONFIG/dss.ri" >>"$LOG_FILE" 2>&1; then
-      err "dss.ri failed. Review $LOG_FILE for details."
-    fi
-  else
-    warn "dss.ri not found; referential constraints will be missing"
+  log "Adding primary and foreign key constraints"
+  if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<'SQL'; then
+ALTER TABLE ONLY region    ADD CONSTRAINT pk_region     PRIMARY KEY (r_regionkey);
+ALTER TABLE ONLY nation    ADD CONSTRAINT pk_nation     PRIMARY KEY (n_nationkey);
+ALTER TABLE ONLY supplier  ADD CONSTRAINT pk_supplier   PRIMARY KEY (s_suppkey);
+ALTER TABLE ONLY customer  ADD CONSTRAINT pk_customer   PRIMARY KEY (c_custkey);
+ALTER TABLE ONLY part      ADD CONSTRAINT pk_part       PRIMARY KEY (p_partkey);
+ALTER TABLE ONLY partsupp  ADD CONSTRAINT pk_partsupp   PRIMARY KEY (ps_partkey, ps_suppkey);
+ALTER TABLE ONLY orders    ADD CONSTRAINT pk_orders     PRIMARY KEY (o_orderkey);
+ALTER TABLE ONLY lineitem  ADD CONSTRAINT pk_lineitem   PRIMARY KEY (l_orderkey, l_linenumber);
+
+ALTER TABLE ONLY nation    ADD CONSTRAINT fk_nation_region         FOREIGN KEY (n_regionkey) REFERENCES region(r_regionkey);
+ALTER TABLE ONLY supplier  ADD CONSTRAINT fk_supplier_nation       FOREIGN KEY (s_nationkey) REFERENCES nation(n_nationkey);
+ALTER TABLE ONLY customer  ADD CONSTRAINT fk_customer_nation       FOREIGN KEY (c_nationkey) REFERENCES nation(n_nationkey);
+ALTER TABLE ONLY partsupp  ADD CONSTRAINT fk_partsupp_part         FOREIGN KEY (ps_partkey)  REFERENCES part(p_partkey);
+ALTER TABLE ONLY partsupp  ADD CONSTRAINT fk_partsupp_supplier     FOREIGN KEY (ps_suppkey)  REFERENCES supplier(s_suppkey);
+ALTER TABLE ONLY orders    ADD CONSTRAINT fk_orders_customer       FOREIGN KEY (o_custkey)   REFERENCES customer(c_custkey);
+ALTER TABLE ONLY lineitem  ADD CONSTRAINT fk_lineitem_order        FOREIGN KEY (l_orderkey)  REFERENCES orders(o_orderkey);
+ALTER TABLE ONLY lineitem  ADD CONSTRAINT fk_lineitem_partsupp     FOREIGN KEY (l_partkey, l_suppkey) REFERENCES partsupp(ps_partkey, ps_suppkey);
+SQL
+    err "Failed adding constraints. Review $LOG_FILE."
   fi
 
   # Índices adicionales para acelerar consultas analíticas (especialmente Q2)
