@@ -160,15 +160,30 @@ generate_and_load_data() {
       -c "\copy $t FROM '${file}' WITH (FORMAT csv, DELIMITER '|')" >>"$LOG_FILE" 2>&1
   done
 
-  log "ANALYZE..."
-  PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
-
-  # (Opcional) FK después de cargar para acelerar el bulk load
+  # Aplicar restricciones y claves foráneas (dss.ri)
   if [[ -f "$DSS_CONFIG/dss.ri" ]]; then
     log "Applying referential integrity (dss.ri)"
-    PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-      -f "$DSS_CONFIG/dss.ri" >>"$LOG_FILE" 2>&1 || warn "dss.ri failed (you can skip it)"
+    if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+      -f "$DSS_CONFIG/dss.ri" >>"$LOG_FILE" 2>&1; then
+      err "dss.ri failed. Review $LOG_FILE for details."
+    fi
+  else
+    warn "dss.ri not found; referential constraints will be missing"
   fi
+
+  # Índices adicionales para acelerar consultas analíticas (especialmente Q2)
+  log "Creating supplemental analytic indexes"
+  if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<'SQL'; then
+CREATE INDEX IF NOT EXISTS idx_part_type_size ON part (p_type, p_size, p_partkey);
+CREATE INDEX IF NOT EXISTS idx_partsupp_part_supplycost ON partsupp (ps_partkey, ps_supplycost);
+CREATE INDEX IF NOT EXISTS idx_partsupp_suppkey_part ON partsupp (ps_suppkey, ps_partkey);
+CREATE INDEX IF NOT EXISTS idx_supplier_nation_suppkey ON supplier (s_nationkey, s_suppkey);
+SQL
+    err "Failed creating supplemental indexes. Review $LOG_FILE."
+  fi
+
+  log "ANALYZE..."
+  PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
 }
 
 # ---- Generación de consultas Q1..Q22 ----
