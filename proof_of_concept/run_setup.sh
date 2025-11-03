@@ -190,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_part_type_size ON part (p_type, p_size, p_partkey
 CREATE INDEX IF NOT EXISTS idx_partsupp_part_supplycost ON partsupp (ps_partkey, ps_supplycost);
 CREATE INDEX IF NOT EXISTS idx_partsupp_suppkey_part ON partsupp (ps_suppkey, ps_partkey);
 CREATE INDEX IF NOT EXISTS idx_supplier_nation_suppkey ON supplier (s_nationkey, s_suppkey);
+CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_qty_price ON lineitem (l_partkey, l_quantity) INCLUDE (l_extendedprice);
 SQL
     err "Failed creating supplemental indexes. Review $LOG_FILE."
   fi
