@@ -196,7 +196,6 @@ def summarize_runs(
                     "qphh_metric": format_number(qphh),
                     "power_metric": format_number(power),
                     "throughput_metric": format_number(throughput),
-                    "notes": row.get("notes", "").strip(),
                 }
             )
 
@@ -219,7 +218,6 @@ def write_clean_csv(output_path: Path, rows: Iterable[Dict[str, str]]) -> None:
         "qphh_metric",
         "power_metric",
         "throughput_metric",
-        "notes",
     ]
 
     with output_path.open("w", newline="") as handle:
