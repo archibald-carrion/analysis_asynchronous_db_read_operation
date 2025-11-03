@@ -1,15 +1,15 @@
 ======================================================================
 EXPERIMENTAL DESIGN SUMMARY
 ======================================================================
-Generated: 2025-10-31 02:10:04
+Generated: 2025-11-02 22:54:40
 
 Design Type: RCBD
 Total Runs: 72
 Balanced Design: Yes
 
 Factors:
-  - I/O Methods: iouring, bgworkers, sync
-  - Database Sizes: 10MB, 10GB, 1GB, 100MB
+  - I/O Methods: bgworkers, iouring, sync
+  - Database Sizes: 10MB, 100MB, 10GB, 1GB
   - Replicates per treatment: 6
 
 Time Estimate:

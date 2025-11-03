@@ -1,0 +1,23 @@
+Randomized TPC-H Benchmark Experiment
+=====================================
+Experiment ID: experiment_20251103_103440
+Generated: 2025-11-03 13:16:31
+
+Experimental Design
+-------------------
+Design type: RCBD
+Total runs: 72
+Schedule file: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/experimental_design_schedule.csv
+
+Execution Summary
+-----------------
+Completed runs: 72
+Failed runs: 0
+Pending runs: 0
+
+Results Location
+----------------
+Raw data: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/randomized_results/raw_data/
+Run logs: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/randomized_results/logs/
+Master log: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/randomized_experiment.log
+Updated schedule: /home/administrador/analysis_asynchronous_db_read_operation/proof_of_concept/experimental_design_schedule.csv

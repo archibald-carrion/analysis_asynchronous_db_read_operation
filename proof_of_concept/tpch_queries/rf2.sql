@@ -1,0 +1,5 @@
+-- Refresh Function 2 (RF2) - FIXED: Delete old sales
+LOOP (SF * 1000) TIMES
+DELETE FROM ORDERS WHERE O_ORDERKEY = [value]
+DELETE FROM LINEITEM WHERE L_ORDERKEY = [value]
+END LOOP
