@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -29,6 +30,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 DEFAULT_SCHEDULE = Path(__file__).with_name("experimental_design_schedule.csv")
 DEFAULT_RESULTS_DIR = Path(__file__).with_name("randomized_results").joinpath("raw_data")
 DEFAULT_OUTPUT = Path(__file__).with_name("randomized_results").joinpath("clean_tpch_results.csv")
+DEBUG = os.environ.get("EXPORT_DEBUG", "1").strip().lower() not in ("", "0", "false", "no")
+
+
+def debug(*parts: object) -> None:
+    if DEBUG:
+        print("[debug]", *parts)
 
 
 @dataclass
@@ -87,11 +94,23 @@ def locate_result_files(results_dir: Path, run_order: int, io_method: str, repli
     refresh_matches = sorted(results_dir.glob(f"{base_pattern}_refresh.csv"))
     interval_matches = sorted(results_dir.glob(f"{base_pattern}_interval.csv"))
 
-    return ResultFiles(
+    files = ResultFiles(
         complete=complete_matches[0] if complete_matches else None,
         refresh=refresh_matches[0] if refresh_matches else None,
         interval=interval_matches[0] if interval_matches else None,
     )
+
+    debug(
+        f"run={run_order} io={io_method} rep={replicate} -> "
+        f"complete={files.complete} refresh={files.refresh} interval={files.interval}"
+    )
+    if not files.all_present():
+        debug(
+            f"Missing result CSVs for run {run_order}: "
+            f"complete={bool(files.complete)} refresh={bool(files.refresh)} interval={bool(files.interval)}"
+        )
+
+    return files
 
 
 def collect_times(path: Path, predicate) -> List[float]:
@@ -169,6 +188,7 @@ def summarize_runs(
         for row in reader:
             status = row.get("status", "").strip().upper()
             if not include_non_completed and status != "COMPLETED":
+                debug(f"Skipping run_order={row.get('run_order')} with status '{status}'")
                 continue
 
             run_number = int(float(row["run_order"]))
@@ -204,6 +224,7 @@ def summarize_runs(
                 }
             )
 
+    debug(f"Collected {len(cleaned_rows)} cleaned rows from schedule")
     return cleaned_rows
 
 
@@ -234,9 +255,22 @@ def write_clean_csv(output_path: Path, rows: Iterable[Dict[str, str]]) -> None:
 
 def main() -> None:
     args = parse_args()
+    debug("Using schedule:", args.schedule.resolve())
+    debug("Schedule exists:", args.schedule.exists())
+    debug("Results directory:", args.results_dir.resolve())
+    debug("Results dir exists:", args.results_dir.exists())
+    debug("Output path:", args.output.resolve())
+
     cleaned = summarize_runs(args.schedule, args.results_dir, args.include_non_completed)
     if not cleaned:
         print("No runs matched the selected criteria; nothing to export.")
+        if args.schedule.exists():
+            with args.schedule.open(newline="") as handle:
+                statuses = [row.get("status", "").strip().upper() for row in csv.DictReader(handle)]
+            debug("Status counts:", {status: statuses.count(status) for status in set(statuses)})
+        else:
+            debug("Schedule file not found on disk.")
+        debug("Results directory listing:", list(args.results_dir.glob("run*_*.csv")))
         return
 
     write_clean_csv(args.output, cleaned)
