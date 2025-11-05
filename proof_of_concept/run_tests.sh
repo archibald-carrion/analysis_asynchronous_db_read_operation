@@ -381,13 +381,15 @@ log_sum = sum(math.log(t) for t in power_times + refresh_times)
 geom_mean = math.exp(log_sum / 24.0)
 
 power_metric = (3600.0 * scale_factor) / geom_mean
-throughput_metric = ((stream_count * 22 * 3600.0) / measurement) * scale_factor
+# Throughput@Size según la imagen: (S × 22 × 3600) / Ts (sin multiplicar por SF)
+throughput_metric = (stream_count * 22 * 3600.0) / measurement
 
 if power_metric <= 0 or throughput_metric <= 0:
     print("0.00")
     sys.exit(0)
 
-qphh = math.sqrt(power_metric * throughput_metric)
+# QphH@Size según la imagen: 1 / sqrt((1 / Power@Size) × (1 / Throughput@Size))
+qphh = 1.0 / math.sqrt((1.0 / power_metric) * (1.0 / throughput_metric))
 print(f"{qphh:.2f}")
 PY
 )
@@ -519,7 +521,8 @@ if measurement is None or stream_count <= 0:
     print("0.00")
     sys.exit(0)
 
-throughput_metric = ((stream_count * 22 * 3600.0) / measurement) * scale_factor
+# Throughput@Size según la imagen: (S × 22 × 3600) / Ts (sin multiplicar por SF)
+throughput_metric = (stream_count * 22 * 3600.0) / measurement
 print(f"{throughput_metric:.2f}")
 PY
 )
@@ -570,9 +573,9 @@ TPC-H Metric Formulas:
 
 1. POWER@Size = 3600 × SF × √[1 / (∏ QI(i,0) × ∏ RI(j,0))]^(1/24)
 
-2. THROUGHPUT@Size = (S × 22 × 3600 / T_s) × SF
+2. THROUGHPUT@Size = (S × 22 × 3600) / T_s
 
-3. QphH@Size = √(POWER@Size × THROUGHPUT@Size)
+3. QphH@Size = 1 / sqrt((1 / Power@Size) × (1 / Throughput@Size))
 
 Where:
 - QI(i,0): Query times from POWER test (stream 0)
