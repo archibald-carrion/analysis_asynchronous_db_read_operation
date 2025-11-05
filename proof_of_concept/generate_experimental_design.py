@@ -195,7 +195,6 @@ def add_execution_metadata(schedule, runtime_per_run=30, cooldown=5):
     schedule['qphh_result'] = np.nan
     schedule['power_result'] = np.nan
     schedule['throughput_result'] = np.nan
-    schedule['notes'] = ''
     
     return schedule
 
@@ -345,6 +344,12 @@ def main():
         help='Random seed for reproducibility (default: random)'
     )
     
+    parser.add_argument(
+        '--randomize-databases',
+        action='store_true',
+        help='Randomize across database sizes (CRD) instead of blocking by database size'
+    )
+    
     args = parser.parse_args()
     
     if args.replicates < 1:
@@ -369,7 +374,12 @@ def main():
     cooldown = args.cooldown
     formatted_sizes = [format_db_label(size) for size in args.db_sizes]
     
-    print("\nGenerating randomized complete block design (RCBD)...")
+    design_label = (
+        "completely randomized design (CRD)"
+        if args.randomize_databases
+        else "randomized complete block design (RCBD)"
+    )
+    print(f"\nGenerating {design_label}...")
     print(f"  Replicates: {args.replicates}")
     print(f"  Database sizes: {', '.join(formatted_sizes)}")
     print(f"  I/O methods: {', '.join(io_methods)}")
@@ -378,7 +388,11 @@ def main():
     print(f"  Seed: {args.seed}")
     
     treatments = generate_treatment_combinations(io_methods, args.db_sizes, args.replicates)
-    schedule = generate_rcbd_schedule(treatments, blocking_factor='db_size_gb', seed=args.seed)
+    
+    if args.randomize_databases:
+        schedule = generate_crd_schedule(treatments, seed=args.seed)
+    else:
+        schedule = generate_rcbd_schedule(treatments, blocking_factor='db_size_gb', seed=args.seed)
     schedule = add_execution_metadata(schedule, runtime_per_run=runtime_per_run, cooldown=cooldown)
     
     # Reorder columns for readability
@@ -400,8 +414,7 @@ def main():
         'execution_timestamp',
         'qphh_result',
         'power_result',
-        'throughput_result',
-        'notes'
+        'throughput_result'
     ]
     existing_columns = [col for col in preferred_columns if col in schedule.columns]
     remaining_columns = [col for col in schedule.columns if col not in existing_columns]
