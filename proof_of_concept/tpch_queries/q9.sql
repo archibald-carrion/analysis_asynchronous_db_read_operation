@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762142529 as a seed to the RNG
+-- using 1762307279 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Product Type Profit Measure Query (Q9)
 -- Functional Query Definition
@@ -30,7 +30,7 @@ from
 			and p_partkey = l_partkey
 			and o_orderkey = l_orderkey
 			and s_nationkey = n_nationkey
-			and p_name like '%lime%'
+			and p_name like '%chartreuse%'
 	) as profit
 group by
 	nation,

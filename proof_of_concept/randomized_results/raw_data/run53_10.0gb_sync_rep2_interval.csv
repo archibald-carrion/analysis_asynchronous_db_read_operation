@@ -1,2 +1,0 @@
-io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time
-sync,1,1,1,THROUGHPUT,2,213.284690683,1762190576.678808395,1762190789.963499078

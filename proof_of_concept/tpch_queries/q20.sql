@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762142529 as a seed to the RNG
+-- using 1762307279 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Potential Part Promotion Query (Q20)
 -- Function Query Definition
@@ -25,7 +25,7 @@ where
 				from
 					part
 				where
-					p_name like 'sky%'
+					p_name like 'papaya%'
 			)
 			and ps_availqty > (
 				select
@@ -35,11 +35,11 @@ where
 				where
 					l_partkey = ps_partkey
 					and l_suppkey = ps_suppkey
-					and l_shipdate >= date '1994-01-01'
-					and l_shipdate < date '1994-01-01' + interval '1' year
+					and l_shipdate >= date '1993-01-01'
+					and l_shipdate < date '1993-01-01' + interval '1' year
 			)
 	)
 	and s_nationkey = n_nationkey
-	and n_name = 'UNITED STATES'
+	and n_name = 'VIETNAM'
 order by
 	s_name;

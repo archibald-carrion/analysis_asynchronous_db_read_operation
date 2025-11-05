@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762142529 as a seed to the RNG
+-- using 1762307279 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Parts/Supplier Relationship Query (Q16)
 -- Functional Query Definition
@@ -16,9 +16,9 @@ from
 	part
 where
 	p_partkey = ps_partkey
-	and p_brand <> 'Brand#52'
-	and p_type not like 'MEDIUM BRUSHED%'
-	and p_size in (24, 43, 12, 49, 46, 23, 39, 15)
+	and p_brand <> 'Brand#53'
+	and p_type not like 'SMALL BURNISHED%'
+	and p_size in (37, 34, 3, 44, 19, 23, 18, 24)
 	and ps_suppkey not in (
 		select
 			s_suppkey

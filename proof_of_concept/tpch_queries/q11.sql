@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762142529 as a seed to the RNG
+-- using 1762307279 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Important Stock Identification Query (Q11)
 -- Functional Query Definition
@@ -16,12 +16,12 @@ from
 where
 	ps_suppkey = s_suppkey
 	and s_nationkey = n_nationkey
-	and n_name = 'IRAQ'
+	and n_name = 'INDIA'
 group by
 	ps_partkey having
 		sum(ps_supplycost * ps_availqty) > (
 			select
-				sum(ps_supplycost * ps_availqty) * 0.0001000000
+				sum(ps_supplycost * ps_availqty) * 0.0100000000
 			from
 				partsupp,
 				supplier,
@@ -29,7 +29,7 @@ group by
 			where
 				ps_suppkey = s_suppkey
 				and s_nationkey = n_nationkey
-				and n_name = 'IRAQ'
+				and n_name = 'INDIA'
 		)
 order by
 	value desc;
