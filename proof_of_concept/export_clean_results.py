@@ -30,7 +30,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 DEFAULT_SCHEDULE = Path(__file__).with_name("experimental_design_schedule.csv")
 DEFAULT_RESULTS_DIR = Path(__file__).with_name("randomized_results").joinpath("raw_data")
 DEFAULT_OUTPUT = Path(__file__).with_name("randomized_results").joinpath("clean_tpch_results.csv")
-DEBUG = os.environ.get("EXPORT_DEBUG", "1").strip().lower() not in ("", "0", "false", "no")
+DEBUG = os.environ.get("EXPORT_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
 
 
 def debug(*parts: object) -> None:
@@ -186,15 +186,19 @@ def summarize_runs(
     with schedule_path.open(newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            status = row.get("status", "").strip().upper()
-            if not include_non_completed and status != "COMPLETED":
-                debug(f"Skipping run_order={row.get('run_order')} with status '{status}'")
+            status_raw = (row.get("status") or "").strip()
+            status_upper = status_raw.upper()
+            status_value = status_upper
+            if not include_non_completed and status_value != "COMPLETED":
+                debug(f"Skipping run_order={row.get('run_order')} with status '{status_value}'")
                 continue
 
             run_number = int(float(row["run_order"]))
             db_size = to_float(row.get("db_size_gb", "0")) or 0.0
             replicate = int(float(row.get("replicate", "0")))
             io_method = row.get("io_method", "")
+            runtime_raw = (row.get("actual_runtime_sec") or "").strip()
+            timestamp_raw = (row.get("execution_timestamp") or "").strip()
             qphh = to_float(row.get("qphh_result", ""))
 
             files = locate_result_files(results_dir, run_number, io_method, replicate)
@@ -215,9 +219,9 @@ def summarize_runs(
                     "database_size_gb": format_number(db_size, 3),
                     "database_size_label": format_db_label(db_size),
                     "database_name": row.get("db_name", ""),
-                    "status": status,
-                    "runtime_seconds": row.get("actual_runtime_sec", ""),
-                    "executed_at": row.get("execution_timestamp", ""),
+                    "status": status_value,
+                    "runtime_seconds": runtime_raw,
+                    "executed_at": timestamp_raw,
                     "qphh_metric": format_number(qphh),
                     "power_metric": format_number(power),
                     "throughput_metric": format_number(throughput),

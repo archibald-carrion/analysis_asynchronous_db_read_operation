@@ -68,7 +68,30 @@ reset_schedule() {
     cp "$SCHEDULE_FILE" "${SCHEDULE_FILE}.backup_$(date +%Y%m%d_%H%M%S)"
     
     # Reset status column using awk
-    awk -F',' 'BEGIN {OFS=","} NR==1 {print; next} {$13="PENDING"; for(i=14; i<=19; i++) $i=""; print}' \
+    awk -F',' '
+        BEGIN {OFS=","}
+        NR==1 {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "status") status_col = i
+                else if ($i == "actual_runtime_sec") runtime_col = i
+                else if ($i == "execution_timestamp") ts_col = i
+                else if ($i == "qphh_result") qphh_col = i
+                else if ($i == "power_result") power_col = i
+                else if ($i == "throughput_result") throughput_col = i
+            }
+            print
+            next
+        }
+        {
+            if (status_col) $status_col = "PENDING"
+            if (runtime_col) $runtime_col = ""
+            if (ts_col) $ts_col = ""
+            if (qphh_col) $qphh_col = ""
+            if (power_col) $power_col = ""
+            if (throughput_col) $throughput_col = ""
+            print
+        }
+    ' \
         "$SCHEDULE_FILE" > "${SCHEDULE_FILE}.tmp"
     mv "${SCHEDULE_FILE}.tmp" "$SCHEDULE_FILE"
     
@@ -395,8 +418,24 @@ update_schedule_status() {
     awk -F',' -v run="$run_order" -v status="$status" -v runtime="$runtime_sec" \
         -v qphh="$qphh" -v ts="$timestamp" \
         'BEGIN {OFS=","}
-         NR==1 {print; next}
-         $1==run {$(NF-6)=status; $(NF-5)=runtime; $(NF-4)=ts; $(NF-3)=qphh; print; next}
+         NR==1 {
+             for (i = 1; i <= NF; i++) {
+                 if ($i == "status") status_col = i
+                 else if ($i == "actual_runtime_sec") runtime_col = i
+                 else if ($i == "execution_timestamp") ts_col = i
+                 else if ($i == "qphh_result") qphh_col = i
+             }
+             print
+             next
+         }
+         $1 == run {
+             if (status_col) $status_col = status
+             if (runtime_col) $runtime_col = runtime
+             if (ts_col) $ts_col = ts
+             if (qphh_col) $qphh_col = qphh
+             print
+             next
+         }
          {print}' \
         "$SCHEDULE_FILE" > "${SCHEDULE_FILE}.tmp"
     
