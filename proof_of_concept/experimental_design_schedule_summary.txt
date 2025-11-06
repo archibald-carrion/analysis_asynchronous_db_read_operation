@@ -1,7 +1,7 @@
 ======================================================================
 EXPERIMENTAL DESIGN SUMMARY
 ======================================================================
-Generated: 2025-11-04 20:49:52
+Generated: 2025-11-05 17:17:45
 
 Design Type: CRD
 Total Runs: 72
@@ -9,7 +9,7 @@ Balanced Design: Yes
 
 Factors:
   - I/O Methods: iouring, bgworkers, sync
-  - Database Sizes: 10GB, 1GB, 100MB, 10MB
+  - Database Sizes: 100MB, 10GB, 1GB, 10MB
   - Replicates per treatment: 6
 
 Time Estimate:

@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762362069 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Minimum Cost Supplier Query (Q2)
 -- Functional Query Definition
@@ -24,11 +24,11 @@ from
 where
 	p_partkey = ps_partkey
 	and s_suppkey = ps_suppkey
-	and p_size = 18
-	and p_type like '%TIN'
+	and p_size = 49
+	and p_type like '%NICKEL'
 	and s_nationkey = n_nationkey
 	and n_regionkey = r_regionkey
-	and r_name = 'ASIA'
+	and r_name = 'MIDDLE EAST'
 	and ps_supplycost = (
 		select
 			min(ps_supplycost)
@@ -42,7 +42,7 @@ where
 			and s_suppkey = ps_suppkey
 			and s_nationkey = n_nationkey
 			and n_regionkey = r_regionkey
-			and r_name = 'ASIA'
+			and r_name = 'MIDDLE EAST'
 	)
 order by
 	s_acctbal desc,

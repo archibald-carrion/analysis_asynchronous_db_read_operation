@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762362069 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Returned Item Reporting Query (Q10)
 -- Functional Query Definition
@@ -23,8 +23,8 @@ from
 where
 	c_custkey = o_custkey
 	and l_orderkey = o_orderkey
-	and o_orderdate >= date '1994-06-01'
-	and o_orderdate < date '1994-06-01' + interval '3' month
+	and o_orderdate >= date '1994-08-01'
+	and o_orderdate < date '1994-08-01' + interval '3' month
 	and l_returnflag = 'R'
 	and c_nationkey = n_nationkey
 group by

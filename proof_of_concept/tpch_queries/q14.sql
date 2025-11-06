@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762362069 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Promotion Effect Query (Q14)
 -- Functional Query Definition
@@ -17,5 +17,5 @@ from
 	part
 where
 	l_partkey = p_partkey
-	and l_shipdate >= date '1995-12-01'
-	and l_shipdate < date '1995-12-01' + interval '1' month;
+	and l_shipdate >= date '1996-09-01'
+	and l_shipdate < date '1996-09-01' + interval '1' month;
