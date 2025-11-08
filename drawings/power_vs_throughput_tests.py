@@ -241,10 +241,10 @@ def create_tpch_metrics_diagram():
                                    facecolor='lightcoral', edgecolor='#e74c3c', linewidth=2)
     ax.add_patch(throughput_box)
     
-    ax.text(50, 0.4, "THROUGHPUT@Size = (S × 22 × 3600) / T_s", 
+    ax.text(50, 0.4, "THROUGHPUT@Size = (S × 22 × 3600 / T_s) × SF", 
             ha='center', va='center', fontsize=12, fontweight='bold', color=text_color)
     
-    ax.text(50, 0.3, "Where: S = Query streams, T_s = Measurement interval (Ts)", 
+    ax.text(50, 0.3, "Where: S = Query streams, T_s = Measurement interval, SF = Scale Factor", 
             ha='center', va='center', fontsize=10, color=text_color)
     
     # Final Metric
@@ -252,7 +252,7 @@ def create_tpch_metrics_diagram():
                               facecolor='lightgreen', edgecolor='#2ecc71', linewidth=2)
     ax.add_patch(final_box)
     
-    ax.text(50, 0.1, "QphH@Size = 1 / sqrt((1 / Power@Size) × (1 / Throughput@Size))", 
+    ax.text(50, 0.1, "QphH@Size = √(POWER@Size × THROUGHPUT@Size)", 
             ha='center', va='center', fontsize=12, fontweight='bold', color=text_color)
     
     ax.set_xticks([])
