@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762625160 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Pricing Summary Report Query (Q1)
 -- Functional Query Definition
@@ -20,7 +20,7 @@ select
 from
 	lineitem
 where
-	l_shipdate <= date '1998-12-01' - interval '91' day (3)
+	l_shipdate <= date '1998-12-01' - interval '113' day (3)
 group by
 	l_returnflag,
 	l_linestatus

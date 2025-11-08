@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762625160 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Returned Item Reporting Query (Q10)
 -- Functional Query Definition

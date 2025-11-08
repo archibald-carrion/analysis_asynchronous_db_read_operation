@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762625160 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Global Sales Opportunity Query (Q22)
 -- Functional Query Definition
@@ -19,7 +19,7 @@ from
 			customer
 		where
 			substring(c_phone from 1 for 2) in
-				('31', '18', '21', '11', '22', '17', '28')
+				('18', '20', '29', '32', '11', '25', '33')
 			and c_acctbal > (
 				select
 					avg(c_acctbal)
@@ -28,7 +28,7 @@ from
 				where
 					c_acctbal > 0.00
 					and substring(c_phone from 1 for 2) in
-						('31', '18', '21', '11', '22', '17', '28')
+						('18', '20', '29', '32', '11', '25', '33')
 			)
 			and not exists (
 				select

@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762625160 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Shipping Priority Query (Q3)
 -- Functional Query Definition
@@ -19,8 +19,8 @@ where
 	c_mktsegment = 'AUTOMOBILE'
 	and c_custkey = o_custkey
 	and l_orderkey = o_orderkey
-	and o_orderdate < date '1995-03-16'
-	and l_shipdate > date '1995-03-16'
+	and o_orderdate < date '1995-03-03'
+	and l_shipdate > date '1995-03-03'
 group by
 	l_orderkey,
 	o_orderdate,

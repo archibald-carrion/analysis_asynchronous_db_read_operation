@@ -1,5 +1,5 @@
 -- TPC TPC-H Parameter Substitution (Version 2.17.3 build 0)
--- using 1762307279 as a seed to the RNG
+-- using 1762625160 as a seed to the RNG
 -- $ID$
 -- TPC-H/TPC-R Top Supplier Query (Q15)
 -- Functional Query Definition
@@ -12,8 +12,8 @@ create view revenue0 (supplier_no, total_revenue) as
 	from
 		lineitem
 	where
-		l_shipdate >= date '1994-12-01'
-		and l_shipdate < date '1994-12-01' + interval '3' month
+		l_shipdate >= date '1993-02-01'
+		and l_shipdate < date '1993-02-01' + interval '3' month
 	group by
 		l_suppkey;
 
