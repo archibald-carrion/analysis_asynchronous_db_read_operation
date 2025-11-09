@@ -1,0 +1,11 @@
+io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,refresh_number,execution_order,execution_time_seconds,rows_affected,timestamp
+bgworkers,1,1,1,POWER,0,1,1,1.410501631,600,2025-11-08 15:21:39
+bgworkers,1,1,1,POWER,0,2,24,.108318296,100,2025-11-08 15:22:06
+bgworkers,1,1,1,THROUGHPUT,R,1,45,.708949680,600,2025-11-08 15:22:07
+bgworkers,1,1,1,THROUGHPUT,R,2,46,.094547776,100,2025-11-08 15:22:07
+bgworkers,1,1,1,THROUGHPUT,R,1,47,.435259829,600,2025-11-08 15:22:08
+bgworkers,1,1,1,THROUGHPUT,R,2,48,.099541652,100,2025-11-08 15:22:08
+bgworkers,1,1,1,THROUGHPUT,R,1,49,.701972013,600,2025-11-08 15:22:08
+bgworkers,1,1,1,THROUGHPUT,R,2,50,.097911378,100,2025-11-08 15:22:09
+bgworkers,1,1,1,THROUGHPUT,R,1,51,.430202013,600,2025-11-08 15:22:09
+bgworkers,1,1,1,THROUGHPUT,R,2,52,.093931661,100,2025-11-08 15:22:09
