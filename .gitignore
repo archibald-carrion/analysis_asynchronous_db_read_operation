@@ -15,4 +15,4 @@ query_execution.log
 
 venv/
 
-proof_of_concept/tpch-kit/
+proof_of_concept/tpch-kit/proof_of_concept/installation.log
