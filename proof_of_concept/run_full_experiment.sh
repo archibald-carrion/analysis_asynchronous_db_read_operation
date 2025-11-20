@@ -24,6 +24,7 @@ RESULTS_DIR="$SCRIPT_DIR/randomized_results"
 RAW_DATA_DIR="$RESULTS_DIR/raw_data"
 RUN_LOGS_DIR="$RESULTS_DIR/logs"
 SCHEDULE_FILE="$SCRIPT_DIR/experimental_design_schedule.csv"
+RF_BACKUP_DIR="$SCRIPT_DIR/tpch_rf_backup"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 section() { log "----- $* -----"; }
@@ -34,6 +35,26 @@ cleanup_results() {
   rm -f "$RESULTS_DIR"/*.csv "$RESULTS_DIR"/*.log 2>/dev/null || true
   rm -f "$RAW_DATA_DIR"/*.csv 2>/dev/null || true
   rm -f "$RUN_LOGS_DIR"/*.log 2>/dev/null || true
+}
+
+backup_refresh_functions() {
+  section "Respaldando RF1/RF2 antes del cleanup"
+  mkdir -p "$RF_BACKUP_DIR"
+  for rf in rf1_fixed.sql rf2_fixed.sql rf1.sql rf2.sql; do
+    if [[ -f "$SCRIPT_DIR/tpch_queries/$rf" ]]; then
+      cp "$SCRIPT_DIR/tpch_queries/$rf" "$RF_BACKUP_DIR/$rf"
+    fi
+  done
+}
+
+restore_refresh_functions() {
+  section "Restaurando RF1/RF2 después del cleanup"
+  mkdir -p "$SCRIPT_DIR/tpch_queries"
+  for rf in rf1_fixed.sql rf2_fixed.sql rf1.sql rf2.sql; do
+    if [[ -f "$RF_BACKUP_DIR/$rf" ]]; then
+      cp "$RF_BACKUP_DIR/$rf" "$SCRIPT_DIR/tpch_queries/$rf"
+    fi
+  done
 }
 
 cleanup_databases() {
@@ -71,7 +92,9 @@ run_experiment() {
 
 main() {
   cleanup_results
+  backup_refresh_functions
   cleanup_databases
+  restore_refresh_functions
   setup_databases
   generate_schedule
   run_experiment
