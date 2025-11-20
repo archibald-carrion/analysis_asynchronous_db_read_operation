@@ -18,6 +18,8 @@ ITERATIONS="${ITERATIONS:-2}"
 RUNS_PER_ITERATION="${RUNS_PER_ITERATION:-2}"
 QUERY_STREAMS="${QUERY_STREAMS:-2}"
 SCALE_FACTOR="${SCALE_FACTOR:-1}"
+AUTO_DETECT_SCALE_FACTOR="${AUTO_DETECT_SCALE_FACTOR:-1}"
+AUTO_SET_QUERY_STREAMS="${AUTO_SET_QUERY_STREAMS:-1}"
 IO_METHOD="${IO_METHOD:-${1:-sync}}"
 
 # Colors for output
@@ -50,6 +52,45 @@ test_postgres_connection() {
         error "Cannot connect to PostgreSQL database $DB_NAME as user $DB_USER"
     fi
     info "PostgreSQL connection successful"
+}
+
+# Detect scale factor dynamically from current data (orders table) when allowed
+detect_scale_factor_from_db() {
+    if [[ "${AUTO_DETECT_SCALE_FACTOR}" != "1" ]]; then
+        return 0
+    fi
+    
+    info "Auto-detecting scale factor from database..."
+    local detected_sf
+    detected_sf=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT GREATEST(COUNT(*)::numeric / 150000.0, 0.01) FROM orders;" 2>/dev/null | tr -d '[:space:]') || true
+    
+    if [[ -n "$detected_sf" ]]; then
+        SCALE_FACTOR="$detected_sf"
+        export SCALE_FACTOR
+        info "Detected scale factor: ${SCALE_FACTOR}"
+    else
+        warning "Could not detect scale factor automatically; using configured value (${SCALE_FACTOR})"
+    fi
+}
+
+# Auto-set query streams based on SF (TPC-H uses S=floor(SF), minimum 1)
+auto_set_query_streams() {
+    if [[ "${AUTO_SET_QUERY_STREAMS}" != "1" ]]; then
+        return 0
+    fi
+    
+    local streams
+    streams=$(python3 - <<'PY'
+import math, os
+sf = float(os.environ.get("SCALE_FACTOR", "1") or "1")
+print(max(1, int(math.floor(sf))))
+PY
+)
+    if [[ -n "$streams" ]]; then
+        QUERY_STREAMS="$streams"
+        export QUERY_STREAMS
+        info "Auto-set query streams to ${QUERY_STREAMS} based on scale factor ${SCALE_FACTOR}"
+    fi
 }
 
 # Execute single query with robust error handling
@@ -144,6 +185,11 @@ execute_refresh_function() {
     local start_time=$(date +%s.%N)
     local output_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_rf${refresh_num}.txt"
     
+    # Capture counts before refresh to compute actual rows affected
+    local orders_before lineitem_before orders_after lineitem_after rows_affected
+    orders_before=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM orders;" 2>/dev/null | tr -d '[:space:]') || orders_before=0
+    lineitem_before=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM lineitem;" 2>/dev/null | tr -d '[:space:]') || lineitem_before=0
+    
     # Execute refresh function without timeout (let it run until completion)
     # Add verbose timing for debugging
     if psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
@@ -153,13 +199,12 @@ execute_refresh_function() {
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
         
-        # Estimate rows affected
-        local rows_affected=0
-        if [ $refresh_num -eq 1 ]; then
-            rows_affected=600  # RF1: ~100 orders + 500 lineitems
-        else
-            rows_affected=100  # RF2: ~50 orders + 50 lineitems
-        fi
+        # Compute rows affected from before/after counts
+        orders_after=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM orders;" 2>/dev/null | tr -d '[:space:]') || orders_after="$orders_before"
+        lineitem_after=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM lineitem;" 2>/dev/null | tr -d '[:space:]') || lineitem_after="$lineitem_before"
+        rows_affected=$(( (orders_after - orders_before) < 0 ? orders_before - orders_after : orders_after - orders_before ))
+        local li_delta=$(( (lineitem_after - lineitem_before) < 0 ? lineitem_before - lineitem_after : lineitem_after - lineitem_before ))
+        rows_affected=$(( rows_affected + li_delta ))
         
         # Write to refresh CSV
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},${execution_time},${rows_affected},$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
@@ -186,9 +231,11 @@ execute_power_test() {
     execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "1"
     
     # Execute all 22 queries sequentially (stream 0)
-    for query_num in {1..22}; do
-        execute_query "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "$query_num" "$((query_num + 1))"
-        sleep 1
+    local power_order=($(generate_random_order))
+    local execution_order=2
+    for query_num in "${power_order[@]}"; do
+        execute_query "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "$query_num" "$execution_order"
+        execution_order=$((execution_order + 1))
     done
     
     # RF2 after queries
@@ -243,28 +290,39 @@ execute_throughput_test() {
         pids+=($!)
     done
     
-    # Execute refresh stream in background (RF1 and RF2 pairs)
-    # According to TPC-H spec: refresh stream runs continuously in parallel with query streams
-    # It executes RF1→RF2 pairs repeatedly throughout the measurement interval
+    # Execute refresh stream continuously in parallel with query streams
     (
         local execution_order=$refresh_start
-        local rf_pair=1
-        # Execute refresh pairs continuously - enough pairs to match query stream activity
-        # Typically one pair per query stream is minimum, but we run a bit more to ensure coverage
-        while [ $rf_pair -le $((QUERY_STREAMS * 2)) ]; do
+        while :; do
+            # Stop when all query pids are done
+            local any_running=0
+            for pid in "${pids[@]}"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                    any_running=1
+                    break
+                fi
+            done
+            if [[ $any_running -eq 0 ]]; then
+                break
+            fi
+            
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
             execution_order=$((execution_order + 1))
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
             execution_order=$((execution_order + 1))
-            rf_pair=$((rf_pair + 1))
         done
     ) &
-    pids+=($!)
+    local refresh_pid=$!
     
     # Wait for all processes to complete
     for pid in "${pids[@]}"; do
         wait $pid
     done
+    
+    # Ensure refresh stream stops after queries finish
+    if kill -0 "$refresh_pid" 2>/dev/null; then
+        wait "$refresh_pid"
+    fi
     
     # Record measurement interval end time
     local end_time=$(date +%s.%N)
@@ -604,14 +662,17 @@ main() {
     log "Starting Complete TPC-H Benchmark..."
     log "I/O Method: $IO_METHOD"
     log "Database: $DB_NAME"
-    log "Scale Factor: $SCALE_FACTOR"
-    log "Query Streams: $QUERY_STREAMS"
-    log "Iterations: $ITERATIONS (with $RUNS_PER_ITERATION runs each)"
-    log "Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))"
     
     mkdir -p "$RESULTS_DIR"
     initialize_csv
     test_postgres_connection
+    detect_scale_factor_from_db
+    auto_set_query_streams
+    
+    log "Scale Factor: $SCALE_FACTOR"
+    log "Query Streams: $QUERY_STREAMS"
+    log "Iterations: $ITERATIONS (with $RUNS_PER_ITERATION runs each)"
+    log "Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))"
     
     # Ensure refresh function files are available
     ensure_refresh_files

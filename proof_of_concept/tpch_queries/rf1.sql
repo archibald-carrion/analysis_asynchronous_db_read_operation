@@ -12,12 +12,11 @@ DO $$
 DECLARE
     num_orders INTEGER;
     scale_factor NUMERIC;
-    refresh_date DATE := '1998-12-01';  -- Refresh date for new orders
+    refresh_date DATE;
     max_orderkey BIGINT;
     partsupp_sample_size INTEGER;
     partsupp_max_rn INTEGER;
     customer_count BIGINT;
-    customer_offset BIGINT;
 BEGIN
     -- Calculate scale factor from existing data
     SELECT COALESCE(COUNT(*)::NUMERIC / 150000.0, 1) INTO scale_factor
@@ -31,6 +30,9 @@ BEGIN
     
     -- OPTIMIZED: Get customer count once for efficient sampling
     SELECT COUNT(*) INTO customer_count FROM customer;
+    
+    -- Choose a refresh date just after the latest order to keep data moving forward
+    SELECT COALESCE(MAX(o_orderdate), DATE '1998-12-01') + (RANDOM() * 30)::int INTO refresh_date FROM orders;
     
     -- Step 1: Insert new orders using efficient offset-based random sampling
     -- Much faster than TABLESAMPLE for large tables when we need small samples

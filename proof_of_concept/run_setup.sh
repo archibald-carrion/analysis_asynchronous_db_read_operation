@@ -214,6 +214,9 @@ generate_queries() {
     sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/;/' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
     # Third: Remove any remaining LIMIT -1 in middle of line
     sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*//' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
+    
+    # Fix: qgen emits "ORDER BY ... ;\nLIMIT n;" which breaks in psql; remove the stray semicolon before LIMIT
+    perl -0777 -i -pe 's/;\s*\n\s*(LIMIT\s+-?[0-9]+)/\n\1/ig' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
   done
   log "Queries saved in $SCRIPT_DIR/tpch_queries/ (fixed LIMIT -1 if present)"
   

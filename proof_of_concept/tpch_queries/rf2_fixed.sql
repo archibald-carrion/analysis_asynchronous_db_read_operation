@@ -11,7 +11,6 @@ DO $$
 DECLARE
     num_orders_to_delete INTEGER;
     scale_factor NUMERIC;
-    delete_date DATE := '1992-01-01';  -- Cutoff date for deletions
 BEGIN
     -- Calculate scale factor from existing data
     SELECT COALESCE(COUNT(*)::NUMERIC / 150000.0, 1) INTO scale_factor
@@ -19,6 +18,7 @@ BEGIN
     
     -- Calculate number of orders to delete: SF * 1500
     num_orders_to_delete := GREATEST(1, FLOOR(scale_factor * 1500)::INTEGER);
+    SELECT LEAST(num_orders_to_delete, COUNT(*)) INTO num_orders_to_delete FROM orders;
     
     -- OPTIMIZED: Create temporary table with orderkeys to delete
     -- This allows PostgreSQL to use indexes efficiently for both deletes
@@ -30,7 +30,6 @@ BEGIN
     INSERT INTO temp_orders_to_delete
     SELECT o_orderkey
     FROM orders
-    WHERE o_orderdate < delete_date
     ORDER BY o_orderdate ASC, o_orderkey ASC
     LIMIT num_orders_to_delete;
     

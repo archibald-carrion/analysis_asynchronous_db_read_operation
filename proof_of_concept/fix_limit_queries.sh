@@ -16,6 +16,7 @@ fi
 echo "Fixing LIMIT -1 in TPC-H queries..."
 
 fixed_count=0
+semicolon_fixes=0
 for query_file in "$QUERIES_DIR"/q*.sql; do
     if [[ ! -f "$query_file" ]]; then
         continue
@@ -35,6 +36,12 @@ for query_file in "$QUERIES_DIR"/q*.sql; do
         
         ((fixed_count++))
     fi
+    
+    # Fix stray semicolon before LIMIT (qgen often emits "ORDER BY ... ;\nLIMIT n;")
+    if perl -0777 -ne 'exit(!/;\s*\n\s*limit\s+-?[0-9]+/i)' "$query_file"; then
+        perl -0777 -i -pe 's/;\s*\n\s*(LIMIT\s+-?[0-9]+)/\n\1/ig' "$query_file"
+        ((semicolon_fixes++))
+    fi
 done
 
 if [[ $fixed_count -eq 0 ]]; then
@@ -43,3 +50,6 @@ else
     echo "Fixed $fixed_count query file(s)."
 fi
 
+if [[ $semicolon_fixes -gt 0 ]]; then
+    echo "Fixed stray semicolons before LIMIT in $semicolon_fixes file(s)."
+fi
