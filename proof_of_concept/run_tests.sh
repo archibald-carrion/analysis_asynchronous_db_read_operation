@@ -21,6 +21,7 @@ SCALE_FACTOR="${SCALE_FACTOR:-1}"
 AUTO_DETECT_SCALE_FACTOR="${AUTO_DETECT_SCALE_FACTOR:-1}"
 AUTO_SET_QUERY_STREAMS="${AUTO_SET_QUERY_STREAMS:-1}"
 IO_METHOD="${IO_METHOD:-${1:-sync}}"
+QUERIES_DIR="${QUERIES_DIR:-}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -93,6 +94,26 @@ PY
     fi
 }
 
+# Choose queries directory based on scale factor (if QUERIES_DIR is not provided)
+select_queries_dir() {
+    if [[ -n "$QUERIES_DIR" && -d "$QUERIES_DIR" ]]; then
+        info "Using queries directory from QUERIES_DIR: $QUERIES_DIR"
+        return 0
+    fi
+    
+    local scale_tag
+    scale_tag=$(printf "%s" "$SCALE_FACTOR" | tr '.' 'p' | tr '-' 'm')
+    local candidate="$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
+    
+    if [[ -d "$candidate" ]]; then
+        QUERIES_DIR="$candidate"
+        info "Using scale-specific queries directory: $QUERIES_DIR"
+    else
+        QUERIES_DIR="$SCRIPT_DIR/tpch_queries"
+        info "Using default queries directory: $QUERIES_DIR"
+    fi
+}
+
 # Execute single query with robust error handling
 execute_query() {
     local run_id=$1
@@ -102,10 +123,10 @@ execute_query() {
     local stream_id=$5
     local query_num=$6
     local execution_order=$7
-    local query_file="$SCRIPT_DIR/tpch_queries/q${query_num}.sql"
+    local query_file="$QUERIES_DIR/q${query_num}.sql"
     
     if [[ ! -f "$query_file" ]]; then
-        warning "Query file $query_file not found, skipping"
+        warning "Query file $query_file not found in $QUERIES_DIR, skipping"
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
         return 1
     fi
@@ -142,8 +163,17 @@ execute_query() {
 # Ensure refresh function files exist (copy _fixed.sql to .sql if needed)
 ensure_refresh_files() {
     for rf_num in 1 2; do
-        local fixed_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}_fixed.sql"
-        local target_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}.sql"
+        local fixed_file="$QUERIES_DIR/rf${rf_num}_fixed.sql"
+        local target_file="$QUERIES_DIR/rf${rf_num}.sql"
+        
+        # Fallback to default location if missing
+        if [[ ! -f "$fixed_file" ]]; then
+            local default_fixed="$SCRIPT_DIR/tpch_queries/rf${rf_num}_fixed.sql"
+            if [[ -f "$default_fixed" ]]; then
+                fixed_file="$default_fixed"
+                target_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}.sql"
+            fi
+        fi
         
         if [[ -f "$fixed_file" ]] && [[ ! -f "$target_file" ]]; then
             cp "$fixed_file" "$target_file"
@@ -163,14 +193,20 @@ execute_refresh_function() {
     local execution_order=$7
     
     # Always use _fixed.sql files - copy to .sql if needed
-    local fixed_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}_fixed.sql"
-    local refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
+    local fixed_file="$QUERIES_DIR/rf${refresh_num}_fixed.sql"
+    local refresh_file="$QUERIES_DIR/rf${refresh_num}.sql"
     
     # Ensure fixed file exists
     if [[ ! -f "$fixed_file" ]]; then
-        warning "Refresh function file $fixed_file not found, skipping"
-        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
-        return 1
+        local default_fixed="$SCRIPT_DIR/tpch_queries/rf${refresh_num}_fixed.sql"
+        if [[ -f "$default_fixed" ]]; then
+            fixed_file="$default_fixed"
+            refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
+        else
+            warning "Refresh function file $fixed_file not found, skipping"
+            echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+            return 1
+        fi
     fi
     
     # Copy fixed file to target file if needed
@@ -668,9 +704,11 @@ main() {
     test_postgres_connection
     detect_scale_factor_from_db
     auto_set_query_streams
+    select_queries_dir
     
     log "Scale Factor: $SCALE_FACTOR"
     log "Query Streams: $QUERY_STREAMS"
+    log "Queries Dir: $QUERIES_DIR"
     log "Iterations: $ITERATIONS (with $RUNS_PER_ITERATION runs each)"
     log "Total Runs: $((ITERATIONS * RUNS_PER_ITERATION))"
     
