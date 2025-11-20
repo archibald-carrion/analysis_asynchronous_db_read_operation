@@ -19,6 +19,7 @@ DB_USER="${DB_USER:-tpch_user}"
 DB_PASSWORD="${DB_PASSWORD:-tpch_password_123}"
 SCALE_FACTOR="${SCALE_FACTOR:-1}"       # ~GB (1, 10, 40, 100)
 PGVER="${PGVER:-18}"                    # para mensajes solamente
+ADD_EXTRA_INDEXES="${ADD_EXTRA_INDEXES:-0}"  # 0 = no crear índices extra
 
 # ---- Flags ----
 CLEAN=false
@@ -143,7 +144,8 @@ setup_tpch_tools() {
 # ---- Generación y carga de datos ----
 generate_and_load_data() {
   log "Generating TPC-H data (SF=${SCALE_FACTOR})"
-  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" >>"$LOG_FILE" 2>&1)
+  # -r 1 ensures dbgen emits refresh files dss.ri (inserts) and dss.rd (deletes)
+  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" -r 1 >>"$LOG_FILE" 2>&1)
   [[ -f "$DSS_PATH/nation.tbl" ]] || err "Data generation failed (nation.tbl missing)"
 
   log "Creating schema from dss.ddl"
@@ -184,19 +186,33 @@ SQL
   fi
 
   # Índices adicionales para acelerar consultas analíticas (especialmente Q2)
-  log "Creating supplemental analytic indexes"
-  if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<'SQL'; then
+  if [[ "$ADD_EXTRA_INDEXES" == "1" ]]; then
+    log "Creating supplemental analytic indexes (ADD_EXTRA_INDEXES=1)"
+    if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<'SQL'; then
 CREATE INDEX IF NOT EXISTS idx_part_type_size ON part (p_type, p_size, p_partkey);
 CREATE INDEX IF NOT EXISTS idx_partsupp_part_supplycost ON partsupp (ps_partkey, ps_supplycost);
 CREATE INDEX IF NOT EXISTS idx_partsupp_suppkey_part ON partsupp (ps_suppkey, ps_partkey);
 CREATE INDEX IF NOT EXISTS idx_supplier_nation_suppkey ON supplier (s_nationkey, s_suppkey);
 CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_qty_price ON lineitem (l_partkey, l_quantity) INCLUDE (l_extendedprice);
 SQL
-    err "Failed creating supplemental indexes. Review $LOG_FILE."
+      err "Failed creating supplemental indexes. Review $LOG_FILE."
+    fi
+  else
+    log "Skipping supplemental analytic indexes (ADD_EXTRA_INDEXES=${ADD_EXTRA_INDEXES})"
   fi
 
   log "ANALYZE..."
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
+}
+
+copy_refresh_files() {
+  if [[ -f "$DSS_PATH/dss.ri" && -f "$DSS_PATH/dss.rd" ]]; then
+    log "Copying refresh data files (dss.ri/dss.rd) into query directory"
+    cp "$DSS_PATH/dss.ri" "$SCRIPT_DIR/tpch_queries/" 2>/dev/null || true
+    cp "$DSS_PATH/dss.rd" "$SCRIPT_DIR/tpch_queries/" 2>/dev/null || true
+  else
+    warn "Refresh data files not found in $DSS_PATH (expected dss.ri and dss.rd). Run dbgen with -r 1."
+  fi
 }
 
 # ---- Generación de consultas Q1..Q22 ----
@@ -226,7 +242,7 @@ generate_queries() {
   local sf_dir="$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
   mkdir -p "$sf_dir"
   cp "$SCRIPT_DIR"/tpch_queries/q*.sql "$sf_dir"/
-  for rf in rf1_fixed.sql rf2_fixed.sql rf1.sql rf2.sql; do
+  for rf in rf1.sql rf2.sql rf1_fixed.sql rf2_fixed.sql dss.ri dss.rd; do
     if [[ -f "$SCRIPT_DIR/tpch_queries/$rf" ]]; then
       cp "$SCRIPT_DIR/tpch_queries/$rf" "$sf_dir"/
     fi
@@ -255,6 +271,7 @@ main() {
     # Only setup tpch-kit and generate queries
     setup_tpch_tools
     generate_queries
+    copy_refresh_files
     
     log "Queries generation complete!"
     log "Queries saved in: $SCRIPT_DIR/tpch_queries/"
@@ -276,6 +293,7 @@ main() {
   setup_tpch_tools
   generate_and_load_data
   generate_queries
+  copy_refresh_files
 
   log "All done!"
   log "DB: ${DB_NAME}  User: ${DB_USER}"

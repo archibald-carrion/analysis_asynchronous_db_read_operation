@@ -160,24 +160,22 @@ execute_query() {
     fi
 }
 
-# Ensure refresh function files exist (copy _fixed.sql to .sql if needed)
+# Ensure refresh function files and refresh data exist locally
 ensure_refresh_files() {
-    for rf_num in 1 2; do
-        local fixed_file="$QUERIES_DIR/rf${rf_num}_fixed.sql"
-        local target_file="$QUERIES_DIR/rf${rf_num}.sql"
-        
-        # Fallback to default location if missing
-        if [[ ! -f "$fixed_file" ]]; then
-            local default_fixed="$SCRIPT_DIR/tpch_queries/rf${rf_num}_fixed.sql"
-            if [[ -f "$default_fixed" ]]; then
-                fixed_file="$default_fixed"
-                target_file="$SCRIPT_DIR/tpch_queries/rf${rf_num}.sql"
-            fi
+    local required_files=(rf1.sql rf2.sql dss.ri dss.rd)
+    for fname in "${required_files[@]}"; do
+        local target="$QUERIES_DIR/$fname"
+        if [[ -f "$target" ]]; then
+            continue
         fi
         
-        if [[ -f "$fixed_file" ]] && [[ ! -f "$target_file" ]]; then
-            cp "$fixed_file" "$target_file"
-            info "Copied rf${rf_num}_fixed.sql to rf${rf_num}.sql"
+        local fallback="$SCRIPT_DIR/tpch_queries/$fname"
+        if [[ -f "$fallback" ]]; then
+            mkdir -p "$QUERIES_DIR"
+            cp "$fallback" "$target"
+            info "Copied $fname into $QUERIES_DIR"
+        else
+            warning "Missing required refresh artifact: $target (fallback $fallback not found)"
         fi
     done
 }
@@ -192,26 +190,35 @@ execute_refresh_function() {
     local refresh_num=$6
     local execution_order=$7
     
-    # Always use _fixed.sql files - copy to .sql if needed
-    local fixed_file="$QUERIES_DIR/rf${refresh_num}_fixed.sql"
     local refresh_file="$QUERIES_DIR/rf${refresh_num}.sql"
+    local refresh_dir
+    refresh_dir="$(dirname "$refresh_file")"
+    local refresh_ri="$refresh_dir/dss.ri"
+    local refresh_rd="$refresh_dir/dss.rd"
     
-    # Ensure fixed file exists
-    if [[ ! -f "$fixed_file" ]]; then
-        local default_fixed="$SCRIPT_DIR/tpch_queries/rf${refresh_num}_fixed.sql"
-        if [[ -f "$default_fixed" ]]; then
-            fixed_file="$default_fixed"
-            refresh_file="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
+    # Ensure refresh SQL exists
+    if [[ ! -f "$refresh_file" ]]; then
+        local fallback="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
+        if [[ -f "$fallback" ]]; then
+            mkdir -p "$QUERIES_DIR"
+            cp "$fallback" "$refresh_file"
+            info "Copied refresh SQL rf${refresh_num}.sql into $QUERIES_DIR"
         else
-            warning "Refresh function file $fixed_file not found, skipping"
+            warning "Refresh function file $refresh_file not found, skipping"
             echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
             return 1
         fi
     fi
     
-    # Copy fixed file to target file if needed
-    if [[ ! -f "$refresh_file" ]] || [[ "$fixed_file" -nt "$refresh_file" ]]; then
-        cp "$fixed_file" "$refresh_file"
+    # Ensure refresh data files exist
+    if [[ "$refresh_num" == "1" && ! -f "$refresh_ri" ]]; then
+        warning "Refresh data file missing: $refresh_ri (required for RF1)"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        return 1
+    elif [[ "$refresh_num" == "2" && ! -f "$refresh_rd" ]]; then
+        warning "Refresh data file missing: $refresh_rd (required for RF2)"
+        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        return 1
     fi
     
     info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
@@ -231,6 +238,9 @@ execute_refresh_function() {
     if psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
         -c "\set VERBOSITY verbose" \
         -c "\timing on" \
+        -v refresh_dir="$refresh_dir" \
+        -v refresh_ri="$refresh_ri" \
+        -v refresh_rd="$refresh_rd" \
         -f "$refresh_file" > "$output_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
@@ -330,6 +340,12 @@ execute_throughput_test() {
     (
         local execution_order=$refresh_start
         while :; do
+            # Always run at least one RF1/RF2 pair before considering exit
+            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
+            execution_order=$((execution_order + 1))
+            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
+            execution_order=$((execution_order + 1))
+
             # Stop when all query pids are done
             local any_running=0
             for pid in "${pids[@]}"; do
@@ -341,11 +357,6 @@ execute_throughput_test() {
             if [[ $any_running -eq 0 ]]; then
                 break
             fi
-            
-            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
-            execution_order=$((execution_order + 1))
-            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
-            execution_order=$((execution_order + 1))
         done
     ) &
     local refresh_pid=$!
