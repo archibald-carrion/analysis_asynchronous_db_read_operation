@@ -1,16 +1,13 @@
 cd ~/analysis_asynchronous_db_read_operation/proof_of_concept
-sudo DB_NAME=tpch_db_10gb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch_db_1gb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch_db_100mb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch_db_10mb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch ./cleanup_tpch.sh --force --full
+sudo DB_NAME=tpch_db_40gb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch_db_10gb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch_db_1gb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch_db_100mb ./cleanup_tpch.sh --force --full && sudo DB_NAME=tpch ./cleanup_tpch.sh --force --full
 
 
+SCALE_FACTOR=40   DB_NAME=tpch_db_40gb  ./run_setup.sh
 SCALE_FACTOR=10   DB_NAME=tpch_db_10gb  ./run_setup.sh
 SCALE_FACTOR=1    DB_NAME=tpch_db_1gb   ./run_setup.sh
 SCALE_FACTOR=0.1  DB_NAME=tpch_db_100mb ./run_setup.sh
-SCALE_FACTOR=0.01 DB_NAME=tpch_db_10mb  ./run_setup.sh
-
-SCALE_FACTOR=10   DB_NAME=tpch_db_10gb  ./run_setup.sh &&SCALE_FACTOR=1    DB_NAME=tpch_db_1gb   ./run_setup.sh && SCALE_FACTOR=0.1  DB_NAME=tpch_db_100mb ./run_setup.sh && SCALE_FACTOR=0.01 DB_NAME=tpch_db_10mb  ./run_setup.sh
 
 export PGPASSWORD=tpch_password_123
 psql -h localhost -U tpch_user -d tpch_db_10gb -c "\di"
 
-
-uv run generate_experimental_design.py   --db-sizes 0.01 0.1 1 10   --replicates 6   --output experimental_design_schedule.csv   --cooldown 1 --randomize-databases
+uv run generate_experimental_design.py   --db-sizes 0.1 1 10 40   --replicates 12   --output experimental_design_schedule.csv   --cooldown 1 --randomize-databases
