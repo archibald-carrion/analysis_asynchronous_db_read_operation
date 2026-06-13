@@ -1,0 +1,13 @@
+problem_folder
+├── Makefile
+├── design
+│   ├── readme.md
+│   └── solution.pseudo
+├── readme.md
+├── src
+│   └── solution.c
+└── tests
+    ├── input001.txt
+    ├── input002.txt
+    ├── output001.txt
+    └── output002.txt
