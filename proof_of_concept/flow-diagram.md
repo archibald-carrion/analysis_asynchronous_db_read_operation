@@ -11,9 +11,9 @@ run_full_experiment.sh
   ├─ generate_treatment_combinations()
   │   └─ Crea todas las combinaciones:
   │       ├─ I/O Methods: sync, bgworkers, iouring
-  │       ├─ DB Sizes: 0.1, 1, 10
+  │       ├─ DB Sizes: 0.1, 1, 10, 40
   │       └─ Replicates: 12
-  │       └─ Total: 3 × 3 × 12 = 108 runs
+  │       └─ Total: 3 × 4 × 12 = 144 runs
   ├─ generate_crd_schedule()
   │   └─ randomiza todas las combinaciones (CRD)
 

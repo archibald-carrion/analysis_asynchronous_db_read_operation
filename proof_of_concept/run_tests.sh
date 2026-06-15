@@ -7,6 +7,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="${LOG_FILE:-$SCRIPT_DIR/query_execution.log}"
+# Errors-only log: every error/warning plus the actual psql failure output is
+# appended here, so a clean run leaves this file empty. The orchestrator
+# (run_randomized_experiment.sh) overrides ERROR_LOG to a per-run path.
+ERROR_LOG="${ERROR_LOG:-$SCRIPT_DIR/query_errors.log}"
 RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/query_results}"
 CSV_OUTPUT="${CSV_OUTPUT:-$SCRIPT_DIR/tpch_complete_results.csv}"
 REFRESH_CSV="${REFRESH_CSV:-$SCRIPT_DIR/tpch_refresh_results.csv}"
@@ -32,14 +36,40 @@ NC='\033[0m'
 
 # Logging functions
 log() { echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1" | tee -a "$LOG_FILE"; }
-error() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOG_FILE"; exit 1; }
-warning() { echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a "$LOG_FILE"; }
+# errorlog appends a plain (no-color) line to the errors-only log. Used by
+# error()/warning() and by query/RF failure paths to record the real cause.
+errorlog() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$ERROR_LOG"; }
+error() { echo -e "${RED}[$(date '+%Y-%m-%d %H:%M:%S')] ERROR:${NC} $1" | tee -a "$LOG_FILE"; errorlog "ERROR: $1"; exit 1; }
+warning() { echo -e "${YELLOW}[$(date '+%Y-%m-%d %H:%M:%S')] WARNING:${NC} $1" | tee -a "$LOG_FILE"; errorlog "WARNING: $1"; }
 info() { echo -e "${BLUE}[$(date '+%Y-%m-%d %H:%M:%S')] INFO:${NC} $1" | tee -a "$LOG_FILE"; }
+
+# Append the tail of a psql output file (the actual Postgres error text) to the
+# errors-only log, so failures are diagnosable from a single file. The whole
+# block is assembled then appended in one write, so concurrent throughput
+# streams don't interleave their error blocks.
+errorlog_file() {
+    local label="$1"
+    local file="$2"
+    local body
+    if [[ -f "$file" ]]; then
+        body="$(tail -n 20 "$file" 2>/dev/null)"
+    else
+        body="(output file not found: $file)"
+    fi
+    {
+        printf '[%s] ----- %s -----\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$label"
+        printf '%s\n' "$body"
+        printf -- '-------------------------\n'
+    } >> "$ERROR_LOG"
+}
 
 # Initialize CSV files
 initialize_csv() {
     log "Initializing CSV output files"
-    
+
+    # Start the errors-only log fresh for this run (stays empty if nothing fails)
+    : > "$ERROR_LOG"
+
     echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,query_number,execution_order,execution_time_seconds,row_count,timestamp" > "$CSV_OUTPUT"
     echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,refresh_number,execution_order,execution_time_seconds,rows_affected,timestamp" > "$REFRESH_CSV"
     echo "io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time" > "$INTERVAL_CSV"
@@ -74,17 +104,28 @@ detect_scale_factor_from_db() {
     fi
 }
 
-# Auto-set query streams based on SF (TPC-H uses S=floor(SF), minimum 1)
+# Auto-set query streams based on SF using the TPC-H minimum-streams table
+# (Clause 5.4.1.2): SF<=1 -> 2, 10 -> 3, 30 -> 4, 100 -> 5, 300 -> 6, 1000 -> 7, ...
+# We pick the S for the largest SF band that does not exceed the actual SF.
 auto_set_query_streams() {
     if [[ "${AUTO_SET_QUERY_STREAMS}" != "1" ]]; then
         return 0
     fi
-    
+
     local streams
     streams=$(python3 - <<'PY'
-import math, os
+import os
 sf = float(os.environ.get("SCALE_FACTOR", "1") or "1")
-print(max(1, int(math.floor(sf))))
+# (min SF for band, stream count) ordered ascending
+table = [(0, 2), (10, 3), (30, 4), (100, 5), (300, 6), (1000, 7),
+         (3000, 8), (10000, 9), (30000, 10), (100000, 11)]
+s = table[0][1]
+for threshold, count in table:
+    if sf >= threshold:
+        s = count
+    else:
+        break
+print(s)
 PY
 )
     if [[ -n "$streams" ]]; then
@@ -104,13 +145,15 @@ select_queries_dir() {
     local scale_tag
     scale_tag=$(printf "%s" "$SCALE_FACTOR" | tr '.' 'p' | tr '-' 'm')
     local candidate="$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
-    
+
+    # The scale-specific dir is mandatory. Each scale factor has its own parameter
+    # sets; there is intentionally no flat fallback, because running another scale's
+    # (or a stale) query set against this database would silently corrupt the result.
     if [[ -d "$candidate" ]]; then
         QUERIES_DIR="$candidate"
         info "Using scale-specific queries directory: $QUERIES_DIR"
     else
-        QUERIES_DIR="$SCRIPT_DIR/tpch_queries"
-        info "Using default queries directory: $QUERIES_DIR"
+        error "Queries directory not found for scale factor ${SCALE_FACTOR}: $candidate. Run run_setup.sh for SF=${SCALE_FACTOR} (generates per-stream query sets). No flat fallback is used."
     fi
 }
 
@@ -123,8 +166,15 @@ execute_query() {
     local stream_id=$5
     local query_num=$6
     local execution_order=$7
-    local query_file="$QUERIES_DIR/q${query_num}.sql"
-    
+
+    # Per-stream parameter set: prefer $QUERIES_DIR/stream<id>/q<n>.sql so each
+    # stream runs distinct substitution parameters (TPC-H). Fall back to the flat
+    # $QUERIES_DIR/q<n>.sql for back-compat or when per-stream sets are absent.
+    local query_file="$QUERIES_DIR/stream${stream_id}/q${query_num}.sql"
+    if [[ ! -f "$query_file" ]]; then
+        query_file="$QUERIES_DIR/q${query_num}.sql"
+    fi
+
     if [[ ! -f "$query_file" ]]; then
         warning "Query file $query_file not found in $QUERIES_DIR, skipping"
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
@@ -154,13 +204,17 @@ execute_query() {
         return 0
     else
         local exit_code=$?
-        warning "Query Q${query_num} failed with exit code $exit_code"
+        warning "Query Q${query_num} failed (exit $exit_code) ${test_type} stream ${stream_id} run ${run_id} [file: $query_file]"
+        errorlog_file "Q${query_num} ${test_type} stream ${stream_id} run ${run_id} (psql exit $exit_code)" "$result_file"
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"
         return 1
     fi
 }
 
-# Ensure refresh function files and refresh data exist locally
+# Ensure refresh function files and refresh data exist locally.
+# These are mandatory for a valid TPC-H run: RF1/RF2 use dbgen's update sets
+# (dss.ri/dss.rd). If any is missing we abort instead of silently skipping the
+# refresh functions (which would yield an invalid 0.00 QphH).
 ensure_refresh_files() {
     local required_files=(rf1.sql rf2.sql dss.ri dss.rd)
     for fname in "${required_files[@]}"; do
@@ -168,15 +222,22 @@ ensure_refresh_files() {
         if [[ -f "$target" ]]; then
             continue
         fi
-        
-        local fallback="$SCRIPT_DIR/tpch_queries/$fname"
-        if [[ -f "$fallback" ]]; then
-            mkdir -p "$QUERIES_DIR"
-            cp "$fallback" "$target"
-            info "Copied $fname into $QUERIES_DIR"
-        else
-            warning "Missing required refresh artifact: $target (fallback $fallback not found)"
+
+        # rf*.sql are hand-authored source; recover from templates/ if absent.
+        # dss.* are dbgen output with no source to recover from -> hard error.
+        if [[ "$fname" == rf*.sql ]]; then
+            local fallback="$SCRIPT_DIR/templates/$fname"
+            if [[ -f "$fallback" ]]; then
+                mkdir -p "$QUERIES_DIR"
+                cp "$fallback" "$target"
+                info "Copied $fname from templates/ into $QUERIES_DIR"
+                continue
+            fi
+            error "Missing refresh function: $target (template $fallback not found). RF1/RF2 are mandatory for a valid run."
         fi
+
+        error "Missing required refresh data: $target.
+Generate it first with dbgen -r 1 via run_setup.sh (per scale factor). RF1/RF2 are mandatory for a valid run."
     done
 }
 
@@ -196,33 +257,27 @@ execute_refresh_function() {
     local refresh_ri="$refresh_dir/dss.ri"
     local refresh_rd="$refresh_dir/dss.rd"
     
-    # Ensure refresh SQL exists
+    # Ensure refresh SQL exists. Source of truth is templates/ (hand-authored,
+    # version-controlled); run_setup.sh normally copies it into the scale dir.
     if [[ ! -f "$refresh_file" ]]; then
-        local fallback="$SCRIPT_DIR/tpch_queries/rf${refresh_num}.sql"
+        local fallback="$SCRIPT_DIR/templates/rf${refresh_num}.sql"
         if [[ -f "$fallback" ]]; then
             mkdir -p "$QUERIES_DIR"
             cp "$fallback" "$refresh_file"
-            info "Copied refresh SQL rf${refresh_num}.sql into $QUERIES_DIR"
+            info "Copied refresh SQL rf${refresh_num}.sql from templates/ into $QUERIES_DIR"
         else
-            warning "Refresh function file $refresh_file not found, skipping"
-            echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
-            return 1
+            error "Refresh function file $refresh_file not found (template $fallback missing). RF is mandatory for a valid run."
         fi
     fi
     
-    # Ensure refresh data files exist
+    # Ensure refresh data files exist (mandatory: missing data invalidates the run)
     if [[ "$refresh_num" == "1" && ! -f "$refresh_ri" ]]; then
-        warning "Refresh data file missing: $refresh_ri (required for RF1)"
-        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
-        return 1
+        error "Refresh data file missing: $refresh_ri (required for RF1). Run dbgen -r 1 via run_setup.sh."
     elif [[ "$refresh_num" == "2" && ! -f "$refresh_rd" ]]; then
-        warning "Refresh data file missing: $refresh_rd (required for RF2)"
-        echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
-        return 1
+        error "Refresh data file missing: $refresh_rd (required for RF2). Run dbgen -r 1 via run_setup.sh."
     fi
-    
+
     info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
-    info "To monitor progress, run: DB_NAME=$DB_NAME ./monitor_rf_progress.sh"
     
     export PGPASSWORD="$DB_PASSWORD"
     local start_time=$(date +%s.%N)
@@ -259,7 +314,8 @@ execute_refresh_function() {
         return 0
     else
         local exit_code=$?
-        warning "Refresh function RF${refresh_num} failed with exit code $exit_code"
+        warning "Refresh function RF${refresh_num} failed (exit $exit_code) ${test_type} stream ${stream_id} run ${run_id} [file: $refresh_file]"
+        errorlog_file "RF${refresh_num} ${test_type} stream ${stream_id} run ${run_id} (psql exit $exit_code)" "$output_file"
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
         return 1
     fi
@@ -381,11 +437,14 @@ execute_throughput_test() {
     log "Throughput Test (Iteration $iteration, Run $run_in_iteration) completed in ${measurement_interval} seconds"
 }
 
-# Configure PostgreSQL for specific I/O method
+# Configure PostgreSQL for specific I/O method.
+# NOTE: this function only logs the intended method. The actual postgresql.conf
+# changes (io_method / worker settings) are applied upstream by toggle_pg_config.sh
+# before this script runs; this is just a record of what the run expects.
 configure_postgresql() {
     local io_method=$1
-    info "Configuring PostgreSQL for I/O method: $io_method"
-    
+    info "I/O method for this run: $io_method (postgresql.conf already set by toggle_pg_config.sh)"
+
     case $io_method in
         "sync")
             info "Using synchronous I/O (default)"
@@ -486,8 +545,8 @@ log_sum = sum(math.log(t) for t in power_times + refresh_times)
 geom_mean = math.exp(log_sum / 24.0)
 
 power_metric = (3600.0 * scale_factor) / geom_mean
-# Throughput@Size según la imagen: (S × 22 × 3600) / Ts (sin multiplicar por SF)
-throughput_metric = (stream_count * 22 * 3600.0) / measurement
+# Throughput@Size (TPC-H Clause 5.4.2.1): (S × 22 × 3600) / Ts × SF
+throughput_metric = (stream_count * 22 * 3600.0) / measurement * scale_factor
 
 if power_metric <= 0 or throughput_metric <= 0:
     print("0.00")
@@ -626,8 +685,8 @@ if measurement is None or stream_count <= 0:
     print("0.00")
     sys.exit(0)
 
-# Throughput@Size según la imagen: (S × 22 × 3600) / Ts (sin multiplicar por SF)
-throughput_metric = (stream_count * 22 * 3600.0) / measurement
+# Throughput@Size (TPC-H Clause 5.4.2.1): (S × 22 × 3600) / Ts × SF
+throughput_metric = (stream_count * 22 * 3600.0) / measurement * scale_factor
 print(f"{throughput_metric:.2f}")
 PY
 )
@@ -678,27 +737,29 @@ TPC-H Metric Formulas:
 
 1. POWER@Size = 3600 × SF × √[1 / (∏ QI(i,0) × ∏ RI(j,0))]^(1/24)
 
-2. THROUGHPUT@Size = (S × 22 × 3600) / T_s
+2. THROUGHPUT@Size = (S × 22 × 3600) / T_s × SF
 
 3. QphH@Size = 1 / sqrt((1 / Power@Size) × (1 / Throughput@Size))
 
 Where:
 - QI(i,0): Query times from POWER test (stream 0)
-- RI(j,0): Refresh times from POWER test (stream 0)  
+- RI(j,0): Refresh times from POWER test (stream 0)
 - S: Query streams ($QUERY_STREAMS)
 - T_s: Measurement interval from INTERVAL_CSV
 - SF: Scale factor ($SCALE_FACTOR)
 
 Data Structure:
-- 15 iterations, each with 2 runs (Run 1 and Run 2)
-- For each iteration, calculate TPC-H metrics using the LOWER QphH@Size
-- Perform statistical analysis across 15 iterations
+- This invocation runs $((ITERATIONS * RUNS_PER_ITERATION)) run(s)
+  (ITERATIONS=$ITERATIONS x RUNS_PER_ITERATION=$RUNS_PER_ITERATION).
+- In the live experiment, run_randomized_experiment.sh calls this script once per
+  scheduled treatment with ITERATIONS=1, RUNS_PER_ITERATION=1, producing one QphH
+  per (I/O method, DB size, replicate) row of the CRD schedule.
 
 Analysis Approach:
-1. Calculate Power, Throughput, and QphH for each of the 30 runs
-2. Group by iteration (2 runs per iteration)
-3. For each iteration, take the lower QphH@Size (TPC-H requirement)
-4. Perform statistical analysis on the 15 resulting QphH values
+1. Calculate Power, Throughput, and QphH for each run.
+2. Each scheduled run yields one QphH@Size, recorded back into the schedule CSV.
+3. Aggregate across the full randomized design (3 I/O methods x 4 DB sizes x 12
+   replicates = 144 runs) for the comparative analysis.
 EOF
 
     log "TPC-H metrics summary saved to: $summary_file"
@@ -729,7 +790,7 @@ main() {
     # Configure PostgreSQL for this I/O method
     configure_postgresql "$IO_METHOD"
     
-    # Execute 15 iterations, each with 2 runs (TPC-H compliant)
+    # Execute ITERATIONS x RUNS_PER_ITERATION runs (live flow uses 1 x 1 per treatment)
     for iteration in $(seq 1 $ITERATIONS); do
         log "Starting Iteration $iteration of $ITERATIONS"
         

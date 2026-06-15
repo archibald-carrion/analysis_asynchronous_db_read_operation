@@ -35,6 +35,9 @@ done
 
 # ---- Utilidades de logging ----
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Source-of-truth, hand-authored files that nothing regenerates (RF1/RF2 SQL).
+# These are version-controlled and copied into each scale-specific query dir.
+TEMPLATES_DIR="$SCRIPT_DIR/templates"
 LOG_FILE="$SCRIPT_DIR/installation.log"
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 log(){ echo -e "${GREEN}[$(date '+%F %T')]${NC} $*" | tee -a "$LOG_FILE"; }
@@ -135,7 +138,7 @@ setup_tpch_tools() {
   export DSS_CONFIG="$dbgen_dir"
   export DSS_QUERY="$dbgen_dir/queries"
   export DSS_PATH="$SCRIPT_DIR/tpch-data"
-  mkdir -p "$DSS_PATH" "$SCRIPT_DIR/tpch_queries"
+  mkdir -p "$DSS_PATH"
 
   [[ -x "$dbgen_dir/dbgen" ]] || err "dbgen not built"
   [[ -x "$dbgen_dir/qgen"  ]] || err "qgen not built"
@@ -205,60 +208,92 @@ SQL
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
 }
 
+# Copy the refresh artifacts into a scale-specific query dir:
+#   - rf1.sql / rf2.sql : hand-authored SQL from templates/ (source of truth)
+#   - dss.ri / dss.rd   : dbgen-generated refresh data sets from DSS_PATH
+# All four are required for a valid run; missing RF SQL is fatal, missing data warns.
 copy_refresh_files() {
+  local dest="$1"
+  mkdir -p "$dest"
+
+  if [[ -f "$TEMPLATES_DIR/rf1.sql" && -f "$TEMPLATES_DIR/rf2.sql" ]]; then
+    log "Copying refresh functions (rf1.sql/rf2.sql) from templates/ into $dest"
+    cp "$TEMPLATES_DIR/rf1.sql" "$dest/"
+    cp "$TEMPLATES_DIR/rf2.sql" "$dest/"
+  else
+    err "Refresh functions not found in $TEMPLATES_DIR (expected rf1.sql and rf2.sql). These are hand-authored source files."
+  fi
+
   if [[ -f "$DSS_PATH/dss.ri" && -f "$DSS_PATH/dss.rd" ]]; then
-    log "Copying refresh data files (dss.ri/dss.rd) into query directory"
-    cp "$DSS_PATH/dss.ri" "$SCRIPT_DIR/tpch_queries/" 2>/dev/null || true
-    cp "$DSS_PATH/dss.rd" "$SCRIPT_DIR/tpch_queries/" 2>/dev/null || true
+    log "Copying refresh data files (dss.ri/dss.rd) into $dest"
+    cp "$DSS_PATH/dss.ri" "$dest/"
+    cp "$DSS_PATH/dss.rd" "$dest/"
   else
     warn "Refresh data files not found in $DSS_PATH (expected dss.ri and dss.rd). Run dbgen with -r 1."
   fi
 }
 
-# ---- Generación de consultas Q1..Q22 ----
-generate_queries() {
-  log "Generating queries Q1..Q22 (SF=${SCALE_FACTOR})"
+# Number of query streams to pre-generate per scale. Must cover the max S that
+# run_tests.sh (auto_set_query_streams) may pick. SF=40 -> S=4; we generate a
+# safe margin. stream0 is the POWER stream; stream1..N are THROUGHPUT streams.
+QGEN_STREAMS="${QGEN_STREAMS:-8}"
+
+# Apply psql-compatibility fixups to a generated query file (LIMIT -1 handling +
+# stray semicolon before LIMIT emitted by some qgen versions).
+fix_query_file() {
+  local f="$1"
+  # Remove standalone "LIMIT -1" lines (TPC-H :n -1 means "no limit")
+  sed -i -E '/^[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/d' "$f"
+  # Replace trailing "LIMIT -1" (optional ;) with just ;
+  sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/;/' "$f"
+  # Remove any remaining inline "LIMIT -1"
+  sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*//' "$f"
+  # qgen emits "ORDER BY ... ;\nLIMIT n;" which breaks in psql; drop the stray ;
+  perl -0777 -i -pe 's/;\s*\n\s*(LIMIT\s+-?[0-9]+)/\n\1/ig' "$f"
+}
+
+# Generate the 22 queries for one stream into a target dir, with a per-stream
+# RNG seed so each stream gets distinct substitution parameters (TPC-H 5.3.5.4).
+generate_query_set() {
+  local target_dir="$1"
+  local seed="$2"
+  mkdir -p "$target_dir"
+  local i
   for i in $(seq 1 22); do
-    "$DSS_CONFIG/qgen" -v -c -s "$SCALE_FACTOR" "$i" > "$SCRIPT_DIR/tpch_queries/q${i}.sql"
-    
-    # Fix: Remove "LIMIT -1" which PostgreSQL doesn't accept (case-insensitive)
-    # TPC-H :n -1 directive means "no limit", but some qgen versions generate "LIMIT -1"
-    # Use extended regex (-E) and case-insensitive pattern to match both LIMIT and limit
-    # First: Remove standalone LIMIT -1 lines (including semicolon if present)
-    sed -i -E '/^[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/d' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
-    # Second: Replace LIMIT -1 at end of line (with optional semicolon) with just semicolon
-    sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*;?[[:space:]]*$/;/' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
-    # Third: Remove any remaining LIMIT -1 in middle of line
-    sed -i -E 's/[[:space:]]*[Ll][Ii][Mm][Ii][Tt][[:space:]]+-1[[:space:]]*//' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
-    
-    # Fix: qgen emits "ORDER BY ... ;\nLIMIT n;" which breaks in psql; remove the stray semicolon before LIMIT
-    perl -0777 -i -pe 's/;\s*\n\s*(LIMIT\s+-?[0-9]+)/\n\1/ig' "$SCRIPT_DIR/tpch_queries/q${i}.sql"
+    "$DSS_CONFIG/qgen" -v -c -s "$SCALE_FACTOR" -r "$seed" "$i" > "$target_dir/q${i}.sql"
+    fix_query_file "$target_dir/q${i}.sql"
   done
-  log "Queries saved in $SCRIPT_DIR/tpch_queries/ (fixed LIMIT -1 if present)"
-  
-  # Save a copy under a scale-specific directory (e.g., tpch_queries_sf40, tpch_queries_sf0p1)
+}
+
+# Derive the scale-specific query dir name (e.g. SF=40 -> tpch_queries_sf40,
+# SF=0.1 -> tpch_queries_sf0p1). MUST match select_queries_dir() in run_tests.sh.
+scale_query_dir() {
   local scale_tag
   scale_tag=$(printf "%s" "$SCALE_FACTOR" | tr '.' 'p' | tr '-' 'm')
-  local sf_dir="$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
+  printf "%s" "$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
+}
+
+# ---- Generación de consultas Q1..Q22 ----
+# Queries are generated ONCE per scale factor into a scale-specific directory.
+# There is no shared "flat" tpch_queries/ dir: each scale is fully isolated so a
+# later scale can never overwrite an earlier one's parameter sets.
+generate_queries() {
+  log "Generating queries Q1..Q22 (SF=${SCALE_FACTOR})"
+
+  local sf_dir
+  sf_dir="$(scale_query_dir)"
   mkdir -p "$sf_dir"
-  cp "$SCRIPT_DIR"/tpch_queries/q*.sql "$sf_dir"/
-  for rf in rf1.sql rf2.sql rf1_fixed.sql rf2_fixed.sql dss.ri dss.rd; do
-    if [[ -f "$SCRIPT_DIR/tpch_queries/$rf" ]]; then
-      cp "$SCRIPT_DIR/tpch_queries/$rf" "$sf_dir"/
-    fi
+
+  # Per-stream parameter sets: stream0 (POWER) .. streamN (THROUGHPUT).
+  # Each stream uses a distinct, deterministic seed (1000 + stream index) so
+  # streams differ per TPC-H Clause 5.3.5.4.
+  local s
+  for s in $(seq 0 "$QGEN_STREAMS"); do
+    log "Generating per-stream query set: stream${s} (seed $((1000 + s)))"
+    generate_query_set "$sf_dir/stream${s}" "$((1000 + s))"
   done
-  log "Queries also copied to scale-specific dir: $sf_dir"
-  
-  # Note: RF1 and RF2 (Refresh Functions) are NOT generated by qgen
-  # They must be created manually according to TPC-H spec
-  # The project includes rf1_fixed.sql and rf2_fixed.sql as PostgreSQL implementations
-  if [[ ! -f "$SCRIPT_DIR/tpch_queries/rf1_fixed.sql" ]] || [[ ! -f "$SCRIPT_DIR/tpch_queries/rf2_fixed.sql" ]]; then
-    warn "Refresh Functions (RF1/RF2) not found. They are required for TPC-H benchmark."
-    warn "Expected files: rf1_fixed.sql and rf2_fixed.sql"
-    warn "These must be created manually - dbgen/qgen does NOT generate them."
-  else
-    log "Refresh Functions (RF1/RF2) found: rf1_fixed.sql, rf2_fixed.sql"
-  fi
+
+  log "Queries saved to scale-specific dir: $sf_dir (per-stream sets stream0..stream${QGEN_STREAMS})"
 }
 
 main() {
@@ -271,10 +306,10 @@ main() {
     # Only setup tpch-kit and generate queries
     setup_tpch_tools
     generate_queries
-    copy_refresh_files
-    
+    copy_refresh_files "$(scale_query_dir)"
+
     log "Queries generation complete!"
-    log "Queries saved in: $SCRIPT_DIR/tpch_queries/"
+    log "Queries saved in: $(scale_query_dir)"
     return 0
   fi
 
@@ -293,12 +328,12 @@ main() {
   setup_tpch_tools
   generate_and_load_data
   generate_queries
-  copy_refresh_files
+  copy_refresh_files "$(scale_query_dir)"
 
   log "All done!"
   log "DB: ${DB_NAME}  User: ${DB_USER}"
   log "Data dir: ${DSS_PATH}"
-  log "Queries : $SCRIPT_DIR/tpch_queries/"
+  log "Queries : $(scale_query_dir)"
 }
 
 main "$@"

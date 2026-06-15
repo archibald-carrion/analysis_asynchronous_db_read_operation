@@ -270,17 +270,29 @@ execute_run() {
     
     # Execute benchmark
     local run_log="$RESULTS_BASE/logs/run_${run_order}_${treatment_id}_rep${replicate}.log"
+    # Errors-only log for this run: stays empty on a clean run; on failure it
+    # holds each error/warning plus the actual psql error output.
+    local run_error_log="$RESULTS_BASE/logs/run_${run_order}_${treatment_id}_rep${replicate}.errors.log"
+    export ERROR_LOG="$run_error_log"
     local start_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local start_time=$(date +%s)
-    
+
     log "Starting TPC-H benchmark..."
-    
+
     if "$SCRIPT_DIR/run_tests.sh" "$io_method" > "$run_log" 2>&1; then
         local end_time=$(date +%s)
         local duration=$((end_time - start_time))
         
         log "✓ Benchmark completed in $((duration / 60)) minutes"
-        
+
+        # A run can "complete" while individual queries/RFs failed (logged as
+        # warnings). Surface that so a non-zero QphH isn't mistaken for clean.
+        if [[ -s "$run_error_log" ]]; then
+            warning "Run $run_order completed but logged errors/warnings (see $run_error_log)"
+        else
+            rm -f "$run_error_log" 2>/dev/null || true
+        fi
+
         # Move results to organized location
         local result_prefix="$RESULTS_BASE/raw_data/run${run_order}_${db_size_gb}gb_${io_method}_rep${replicate}"
         
@@ -302,7 +314,7 @@ execute_run() {
         
         return 0
     else
-        warning "Benchmark failed for run $run_order (see $run_log)"
+        warning "Benchmark failed for run $run_order (full log: $run_log | errors: $run_error_log)"
         update_schedule_status "$run_order" "FAILED" "0" "0" "$start_timestamp"
         unset SKIP_POSTGRES_RESTART
         return 1
@@ -386,8 +398,8 @@ log_sum = sum(math.log(t) for t in power_times + refresh_times)
 geom_mean = math.exp(log_sum / 24.0)
 
 power_metric = (3600.0 * scale_factor) / geom_mean
-# Throughput@Size según la imagen: (S × 22 × 3600) / Ts (sin multiplicar por SF)
-throughput_metric = (stream_count * 22 * 3600.0) / measurement
+# Throughput@Size (TPC-H Clause 5.4.2.1): (S × 22 × 3600) / Ts × SF
+throughput_metric = (stream_count * 22 * 3600.0) / measurement * scale_factor
 
 if power_metric <= 0 or throughput_metric <= 0:
     print("0.00")
@@ -528,7 +540,7 @@ Pending runs: $(grep -c "PENDING" "$SCHEDULE_FILE" || true)
 Results Location
 ----------------
 Raw data: $RESULTS_BASE/raw_data/
-Run logs: $RESULTS_BASE/logs/
+Run logs: $RESULTS_BASE/logs/ (run_*.log = full; run_*.errors.log = errors only, present only for runs with failures)
 Master log: $MASTER_LOG
 Updated schedule: $SCHEDULE_FILE
 EOF

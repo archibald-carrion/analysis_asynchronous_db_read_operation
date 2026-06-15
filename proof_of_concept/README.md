@@ -1,76 +1,83 @@
-# TPC-H Database Setup Scripts
+# TPC-H Experiment — proof_of_concept
 
-## Usage
+Scripts that set up TPC-H databases and run the I/O-method benchmark on **PostgreSQL 18**
+(Linux VM with `systemd`). See `../README.md` for the high-level flow and
+`TPCH_COMPLIANCE.md` for the TPC-H compliance audit.
 
-### On Raspberry Pi or Low-Memory Systems (<2GB RAM)
+## Entry points
 
-```bash
-./run_test.sh --low-memory
-```
-
-This will configure PostgreSQL with minimal memory settings:
-- **shared_buffers**: 128MB
-- **work_mem**: 4MB  
-- **maintenance_work_mem**: 64MB
-- **effective_cache_size**: 256MB
-- **max_connections**: 20
-
-### On Powerful Machines (4GB+ RAM)
+### Full experiment (everything)
 
 ```bash
-./run_test.sh
+./run_full_experiment.sh
 ```
 
-This will auto-detect your system memory and configure PostgreSQL optimally:
+Orchestrates the whole cycle: cleans old DBs → regenerates data + queries for each scale →
+generates the randomized CRD schedule → runs the randomized experiment. Calls, in order:
+`cleanup_tpch.sh`, `run_setup.sh` (per scale), `generate_experimental_design.py`,
+`run_randomized_experiment.sh`.
 
-**For 4GB+ systems:**
-- **shared_buffers**: 2GB
-- **work_mem**: 256MB
-- **maintenance_work_mem**: 1GB
-- **effective_cache_size**: 4GB
-
-**For 2-4GB systems:**
-- **shared_buffers**: 512MB
-- **work_mem**: 32MB
-- **maintenance_work_mem**: 256MB
-- **effective_cache_size**: 1GB
-
-## Installing Dependencies Only
-
-If you just want to install PostgreSQL and dependencies:
+### Setup only (build databases for one scale)
 
 ```bash
-# Normal mode (auto-detect)
-./install_dependencies.sh
+SCALE_FACTOR=40   DB_NAME=tpch_db_40gb  ./run_setup.sh
+SCALE_FACTOR=10   DB_NAME=tpch_db_10gb  ./run_setup.sh
+SCALE_FACTOR=1    DB_NAME=tpch_db_1gb   ./run_setup.sh
+SCALE_FACTOR=0.1  DB_NAME=tpch_db_100mb ./run_setup.sh
 
-# Low-memory mode (Raspberry Pi)
-./install_dependencies.sh --low-memory
+# Queries only, no DB changes:
+SCALE_FACTOR=0.1 DB_NAME=tpch_db_100mb ./run_setup.sh --queries-only
 ```
 
-## System Requirements
+`run_setup.sh` installs/uses PostgreSQL 18, builds **tpch-kit** (gregrahn), generates data
+with `dbgen`, loads via `\copy`, and generates Q1–Q22 with `qgen`.
+See `commands-to-start-project.txt` for the exact copy-paste sequence (including cleanup).
 
-### Minimum (Raspberry Pi 3B)
-- **RAM**: 1GB
-- **Disk**: 5GB free space
-- **OS**: Debian 11+ (Bullseye/Bookworm/Trixie)
+### Generate the experimental design
 
-### Recommended (Production)
-- **RAM**: 4GB+
-- **Disk**: 50GB+ free space
-- **CPU**: 4+ cores
-- **OS**: Debian 11+ or Ubuntu 20.04+
+```bash
+uv run generate_experimental_design.py \
+  --db-sizes 0.1 1 10 40 --replicates 12 \
+  --output experimental_design_schedule.csv \
+  --cooldown 1 --randomize-databases
+```
 
-## Database Details
+Produces a Completely Randomized Design (CRD): 3 I/O methods × 4 sizes × 12 replicates =
+**144 runs** in randomized order.
 
-After successful installation:
-- **Database Name**: `tpch_db`
-- **Database User**: `tpch_user`
-- **Password**: `tpch_password_123`
-- **Port**: 5432
+### Run the randomized experiment
+
+```bash
+./run_randomized_experiment.sh
+```
+
+Reads `experimental_design_schedule.csv` and, for each run, switches database, applies the
+I/O method via `toggle_pg_config.sh`, restarts PostgreSQL, clears caches, cools down, then
+invokes `run_tests.sh` (power + throughput tests, QphH). Results land in
+`randomized_results/` and the schedule CSV is updated in place (PENDING → COMPLETED/FAILED),
+so the run is resumable.
+
+## I/O method configuration
+
+`toggle_pg_config.sh <sync|bgworkers|iouring>` rewrites `/etc/postgresql/18/main/postgresql.conf`
+from a backup and appends the mode-specific config from `.../modes/*.conf`, then restarts
+PostgreSQL. Those mode files and the original backup are created by `configure_pg_modes.sh`.
+
+## Database details (defaults)
+
+- Database user: `tpch_user` · password: `tpch_password_123` · port: `5432`
+- Per-scale DB names: `tpch_db_100mb`, `tpch_db_1gb`, `tpch_db_10gb`, `tpch_db_40gb`
+
+## Outputs
+
+- `randomized_results/raw_data/` — per-run complete/refresh/interval CSVs
+- `randomized_results/logs/` — per-run logs
+- `experimental_design_schedule.csv` — schedule + status + QphH results
+- `randomized_experiment.log` — master log
 
 ## Notes
 
-- The `--low-memory` flag forces minimal PostgreSQL settings regardless of auto-detection
-- Auto-detection will still apply low-memory settings on systems with <2GB RAM even without the flag
-- Use `--low-memory` on Raspberry Pi to ensure optimal settings
-- The script creates detailed logs in `installation.log`
+- These scripts target a Linux VM (`systemctl`, `/proc/sys/vm/drop_caches`,
+  `/etc/postgresql/18/...`). They will not run on macOS.
+- Superseded / one-off helper scripts have been archived under `legacy/` — see
+  `legacy/README.md`.

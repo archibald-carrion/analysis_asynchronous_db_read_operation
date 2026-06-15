@@ -164,12 +164,19 @@ cleanup_files() {
         log "Results directory removed"
     fi
     
-    # Remove generated queries directory
+    # Remove generated query directories (legacy flat dir + scale-specific dirs).
+    # Hand-authored RF SQL lives in templates/ and is NOT touched by cleanup.
     if [[ -d "$query_dir" ]]; then
         log "Removing directory: $query_dir"
         rm -rf "$query_dir"
         log "Queries directory removed"
     fi
+    for sf_query_dir in "$SCRIPT_DIR"/tpch_queries_sf*; do
+        if [[ -d "$sf_query_dir" ]]; then
+            log "Removing directory: $sf_query_dir"
+            rm -rf "$sf_query_dir"
+        fi
+    done
     
     # Remove CSV output files
     log "Removing CSV output files..."
