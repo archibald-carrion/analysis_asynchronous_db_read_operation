@@ -3,6 +3,11 @@
 End-to-end commands to take a **brand-new Debian 13 (Trixie) Linux VM** to a completed TPC-H
 I/O-method experiment. Run everything **inside the VM**, as a user with `sudo`.
 
+> **Scope of this run:** the paper's experiment uses **three database scales — 100 MB, 1 GB,
+> and 10 GB**. Those are the only databases built and benchmarked below. Larger scales
+> (e.g. 40 GB, 100 GB, 1 TB) are **future-work references**, not part of this reproduction;
+> see the note at the end of Step 4 if you want to add them later.
+
 > **Target OS:** Debian 13 (Trixie). `run_setup.sh` assumes the PGDG `trixie-pgdg` repo and
 > `/etc/postgresql/18/...` paths. On Ubuntu the package/repo steps differ slightly (the
 > `apt.postgresql.org.sh` script handles both, but conf paths are still `/etc/postgresql/18/main`).
@@ -90,14 +95,19 @@ loads data, and generates Q1–Q22 **plus the per-stream query sets** (`stream0.
 cd ~/analysis_asynchronous_db_read_operation/proof_of_concept
 
 # One command per scale factor. SCALE_FACTOR is ~GB; DB_NAME follows tpch_db_<n>gb.
+# These three scales are the ones used in the paper.
 SCALE_FACTOR=0.1  DB_NAME=tpch_db_100mb ./run_setup.sh
 SCALE_FACTOR=1    DB_NAME=tpch_db_1gb   ./run_setup.sh
 SCALE_FACTOR=10   DB_NAME=tpch_db_10gb  ./run_setup.sh
-SCALE_FACTOR=40   DB_NAME=tpch_db_40gb  ./run_setup.sh
 ```
 
-> Pick the scales you actually want — they must match the `--db-sizes` in Step 7.
-> **Disk/time:** SF=40 needs tens of GB; larger SFs grow fast. Do the small ones first.
+> These three scales (100 MB / 1 GB / 10 GB) **must match the `--db-sizes` in Step 7.**
+> **Disk/time:** do the small ones first; SF=10 already takes a while and ~10 GB+ of disk.
+>
+> **Future references (optional, not part of the paper):** larger scales such as 40 GB or
+> 100 GB are listed in the paper only as future work. To add one later, run another line —
+> e.g. `SCALE_FACTOR=40 DB_NAME=tpch_db_40gb ./run_setup.sh` — and remember to also add `40`
+> to `--db-sizes` in Step 7. SF=40 needs tens of GB; larger SFs grow fast.
 
 DB credentials created by setup: user `tpch_user`, password `tpch_password_123`.
 
@@ -152,7 +162,7 @@ that scale so dbgen regenerates them.
 
 ```bash
 uv run generate_experimental_design.py \
-  --db-sizes 0.1 1 10 40 \
+  --db-sizes 0.1 1 10 \
   --replicates 12 \
   --output experimental_design_schedule.csv \
   --cooldown 1 --randomize-databases
@@ -161,7 +171,7 @@ uv run generate_experimental_design.py \
 No uv? Use python3 with the project deps (pandas, numpy):
 ```bash
 python3 -m pip install --user pandas numpy
-python3 generate_experimental_design.py --db-sizes 0.1 1 10 40 --replicates 12 \
+python3 generate_experimental_design.py --db-sizes 0.1 1 10 --replicates 12 \
   --output experimental_design_schedule.csv --cooldown 1 --randomize-databases
 ```
 
@@ -171,9 +181,9 @@ Two options:
 
 **A) Full automated cycle** (cleans DBs, regenerates data+queries, regenerates the schedule,
 then runs everything). Use this if you want one command to do Steps 4+7+8.
-> ⚠️ It **drops and rebuilds** all the databases listed in its `SCALES=(...)` array. Edit that
-> array and the `--db-sizes` in its `generate_schedule()` first if your scales differ from the
-> default 0.1/1/10/40.
+> ⚠️ It **drops and rebuilds** all the databases listed in its `SCALES=(...)` array. Make sure
+> that array and the `--db-sizes` in its `generate_schedule()` are set to the paper's three
+> scales (`0.1 1 10`) — edit them if they differ.
 ```bash
 ./run_full_experiment.sh
 ```
@@ -227,19 +237,18 @@ sudo apt-get install -y postgresql-common
 sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
 sudo apt-get update -y && sudo apt-get install -y postgresql-18 postgresql-client-18
 sudo systemctl enable --now postgresql
-# 3-4. build TPC-H + DBs (repeat per scale)
+# 3-4. build TPC-H + DBs (repeat per scale — paper uses 100MB/1GB/10GB)
 cd ~/analysis_asynchronous_db_read_operation/proof_of_concept && chmod +x *.sh
 SCALE_FACTOR=0.1 DB_NAME=tpch_db_100mb ./run_setup.sh
 SCALE_FACTOR=1   DB_NAME=tpch_db_1gb   ./run_setup.sh
 SCALE_FACTOR=10  DB_NAME=tpch_db_10gb  ./run_setup.sh
-SCALE_FACTOR=40  DB_NAME=tpch_db_40gb  ./run_setup.sh
 # 5. PG modes
 sudo ./configure_pg_modes.sh
 # 6. smoke test
 export PGPASSWORD=tpch_password_123
 SCALE_FACTOR=0.1 DB_NAME=tpch_db_100mb ITERATIONS=1 RUNS_PER_ITERATION=1 ./run_tests.sh sync
 # 7. schedule
-uv run generate_experimental_design.py --db-sizes 0.1 1 10 40 --replicates 12 \
+uv run generate_experimental_design.py --db-sizes 0.1 1 10 --replicates 12 \
   --output experimental_design_schedule.csv --cooldown 1 --randomize-databases
 # 8. run (inside tmux)
 ./run_randomized_experiment.sh

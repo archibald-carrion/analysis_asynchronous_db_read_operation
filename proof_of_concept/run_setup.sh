@@ -19,7 +19,6 @@ DB_USER="${DB_USER:-tpch_user}"
 DB_PASSWORD="${DB_PASSWORD:-tpch_password_123}"
 SCALE_FACTOR="${SCALE_FACTOR:-1}"       # ~GB (1, 10, 40, 100)
 PGVER="${PGVER:-18}"                    # para mensajes solamente
-ADD_EXTRA_INDEXES="${ADD_EXTRA_INDEXES:-0}"  # 0 = no crear índices extra
 
 # ---- Flags ----
 CLEAN=false
@@ -183,26 +182,17 @@ ALTER TABLE ONLY partsupp  ADD CONSTRAINT fk_partsupp_part         FOREIGN KEY (
 ALTER TABLE ONLY partsupp  ADD CONSTRAINT fk_partsupp_supplier     FOREIGN KEY (ps_suppkey)  REFERENCES supplier(s_suppkey);
 ALTER TABLE ONLY orders    ADD CONSTRAINT fk_orders_customer       FOREIGN KEY (o_custkey)   REFERENCES customer(c_custkey);
 ALTER TABLE ONLY lineitem  ADD CONSTRAINT fk_lineitem_order        FOREIGN KEY (l_orderkey)  REFERENCES orders(o_orderkey);
+ALTER TABLE ONLY lineitem  ADD CONSTRAINT fk_lineitem_part         FOREIGN KEY (l_partkey)   REFERENCES part(p_partkey);
+ALTER TABLE ONLY lineitem  ADD CONSTRAINT fk_lineitem_supplier     FOREIGN KEY (l_suppkey)   REFERENCES supplier(s_suppkey);
 ALTER TABLE ONLY lineitem  ADD CONSTRAINT fk_lineitem_partsupp     FOREIGN KEY (l_partkey, l_suppkey) REFERENCES partsupp(ps_partkey, ps_suppkey);
 SQL
     err "Failed adding constraints. Review $LOG_FILE."
   fi
 
-  # Índices adicionales para acelerar consultas analíticas (especialmente Q2)
-  if [[ "$ADD_EXTRA_INDEXES" == "1" ]]; then
-    log "Creating supplemental analytic indexes (ADD_EXTRA_INDEXES=1)"
-    if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<'SQL'; then
-CREATE INDEX IF NOT EXISTS idx_part_type_size ON part (p_type, p_size, p_partkey);
-CREATE INDEX IF NOT EXISTS idx_partsupp_part_supplycost ON partsupp (ps_partkey, ps_supplycost);
-CREATE INDEX IF NOT EXISTS idx_partsupp_suppkey_part ON partsupp (ps_suppkey, ps_partkey);
-CREATE INDEX IF NOT EXISTS idx_supplier_nation_suppkey ON supplier (s_nationkey, s_suppkey);
-CREATE INDEX IF NOT EXISTS idx_lineitem_partkey_qty_price ON lineitem (l_partkey, l_quantity) INCLUDE (l_extendedprice);
-SQL
-      err "Failed creating supplemental indexes. Review $LOG_FILE."
-    fi
-  else
-    log "Skipping supplemental analytic indexes (ADD_EXTRA_INDEXES=${ADD_EXTRA_INDEXES})"
-  fi
+  # No supplemental indexes are created: only the primary/foreign key constraints
+  # above are defined, which is the most that TPC-H Clause 1.5.7 permits without
+  # query-specific tuning. (Extra analytic indexes on non-key columns would make
+  # the database non-compliant.)
 
   log "ANALYZE..."
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1

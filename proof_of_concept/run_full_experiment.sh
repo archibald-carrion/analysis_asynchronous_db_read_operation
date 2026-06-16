@@ -11,14 +11,14 @@
 #   ./run_full_experiment.sh 1 5 10 15 20 40
 #   SCALE_FACTORS="1 5 10 15 20 40" ./run_full_experiment.sh
 #   REPLICATES=12 ./run_full_experiment.sh 1 5 10 40
-# Sin argumentos usa la lista por defecto (0.1 1 10 40).
+# Sin argumentos usa la lista por defecto (0.1 1 10).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Escalas: argumentos posicionales > env SCALE_FACTORS > default ---
-DEFAULT_SCALES=(0.1 1 10 40)
+DEFAULT_SCALES=(0.1 1 10)
 if [[ $# -gt 0 ]]; then
   SCALE_FACTORS_LIST=("$@")
 elif [[ -n "${SCALE_FACTORS:-}" ]]; then
