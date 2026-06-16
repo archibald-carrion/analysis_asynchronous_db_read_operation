@@ -17,9 +17,11 @@ show_usage() {
 }
 
 get_current_mode() {
+    # Single-factor design: the only setting that varies is io_method
+    # (sync.conf -> sync, bgworkers.conf -> worker, iouring.conf -> io_uring).
     if grep -q "^io_method *= *'io_uring'" "$CONF_FILE"; then
         echo "iouring"
-    elif grep -q "^max_worker_processes = 8" "$CONF_FILE"; then
+    elif grep -q "^io_method *= *'worker'" "$CONF_FILE"; then
         echo "bgworkers"
     else
         echo "sync"
@@ -48,10 +50,11 @@ apply_mode() {
     echo "Applying $mode mode..."
     cp "$BACKUP_FILE" "$CONF_FILE"
     
-    # Append mode configuration
+    # Append mode configuration. Each mode file sets ONLY io_method; everything
+    # else stays at the backed-up conf defaults (single-factor design).
     case $mode in
         "sync")
-            echo "# Synchronous mode - baseline" >> "$CONF_FILE"
+            cat "/etc/postgresql/18/main/modes/sync.conf" >> "$CONF_FILE"
             ;;
         "bgworkers")
             cat "/etc/postgresql/18/main/modes/bgworkers.conf" >> "$CONF_FILE"
@@ -136,28 +139,25 @@ main() {
     case $target_mode in
         "sync")
             echo "MODE: SYNC (Baseline)"
-            echo "  - Single-threaded execution"
-            echo "  - No parallel workers"
-            echo "  - Conservative resource usage"
+            echo "  - io_method = sync (synchronous I/O)"
+            echo "  - all other settings at conf defaults"
             ;;
         "bgworkers")
             echo "MODE: BACKGROUND WORKERS"
-            echo "  - Parallel query execution"
-            echo "  - 8 max worker processes"
-            echo "  - 4 parallel workers per gather"
+            echo "  - io_method = worker (async I/O via background I/O workers)"
+            echo "  - all other settings at conf defaults"
             ;;
         "iouring")
             echo "MODE: IO_URING"
-            echo "  - Async I/O operations"
-            echo "  - 4 io_uring workers"
-            echo "  - Optimized for high I/O throughput"
+            echo "  - io_method = io_uring (async I/O via Linux io_uring)"
+            echo "  - all other settings at conf defaults"
             ;;
     esac
-    
+
     echo ""
-    echo "Key settings:"
-    grep -E "^(max_worker_processes|max_parallel_workers|io_method)" "$CONF_FILE" 2>/dev/null || \
-    echo "  (Using default synchronous settings)"
+    echo "Key setting (the only one varied across modes):"
+    grep -E "^io_method" "$CONF_FILE" 2>/dev/null || \
+    echo "  io_method not set -> server default (worker)"
 }
 
 # Handle help

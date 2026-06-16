@@ -20,68 +20,41 @@ if [[ ! -f "$BACKUP_FILE" ]]; then
 fi
 
 # Create mode configurations
+#
+# SINGLE-FACTOR DESIGN: the ONLY setting that varies across the three modes is
+# `io_method`. Everything else (shared_buffers, work_mem, parallel workers, WAL,
+# planner costs, effective_io_concurrency, ...) is left at PostgreSQL's stock
+# defaults from the backed-up postgresql.conf, identical for all three modes.
+# This keeps the experiment a clean comparison of io_method = sync vs worker vs
+# io_uring; any other tuning here would confound the result.
+#
+#   sync.conf      -> io_method = sync     (synchronous, no async I/O)
+#   bgworkers.conf -> io_method = worker   (async I/O via background I/O workers)
+#   iouring.conf   -> io_method = io_uring (async I/O via Linux io_uring)
 create_mode_configs() {
     local conf_dir="/etc/postgresql/18/main/modes"
     mkdir -p "$conf_dir"
-    
-    # Synchronous mode (baseline)
+
+    # Synchronous mode (baseline): no async I/O.
     cat > "$conf_dir/sync.conf" << 'EOF'
-# Synchronous Mode - Baseline
-# max_worker_processes = 0                   # Disabled
-# max_parallel_workers_per_gather = 0        # Disabled  
-# max_parallel_workers = 0                   # Disabled
-# io_uring_workers = 0                       # Disabled
-
-# Conservative settings
-shared_buffers = 128MB
-effective_cache_size = 1GB
-work_mem = 4MB
-maintenance_work_mem = 64MB
+# Sync Mode - synchronous I/O (baseline)
+# Only io_method differs from the other modes; all else stays at conf defaults.
+io_method = 'sync'
 EOF
 
-    # Background Workers mode
+    # Background Workers mode: async I/O serviced by background I/O worker procs.
     cat > "$conf_dir/bgworkers.conf" << 'EOF'
-# Background Workers Mode - Parallel Queries
-max_worker_processes = 8
-max_parallel_workers_per_gather = 4
-max_parallel_workers = 8
-max_parallel_maintenance_workers = 2
-
-# Optimized for parallelism
-shared_buffers = 1GB
-effective_cache_size = 2GB
-work_mem = 32MB
-maintenance_work_mem = 256MB
-effective_io_concurrency = 2
-parallel_setup_cost = 10.0
-parallel_tuple_cost = 0.001
-
-# Disable io_uring for clean comparison
-# io_uring_workers = 0
+# Background Workers Mode - async I/O via background I/O workers
+# Only io_method differs from the other modes; all else stays at conf defaults.
+io_method = 'worker'
 EOF
 
-    # io_uring mode
+    # io_uring mode: async I/O via Linux io_uring (PostgreSQL must be built with
+    # --with-liburing; PGDG packages are).
     cat > "$conf_dir/iouring.conf" << 'EOF'
-# io_uring Mode - Async I/O
-max_worker_processes = 8
-max_parallel_workers_per_gather = 4
-max_parallel_workers = 8
-
-# Enable io_uring I/O method (PostgreSQL must be built with --with-io-uring)
+# io_uring Mode - async I/O via Linux io_uring
+# Only io_method differs from the other modes; all else stays at conf defaults.
 io_method = 'io_uring'
-
-# Optimized for async I/O
-shared_buffers = 1GB
-effective_cache_size = 2GB
-work_mem = 32MB
-maintenance_work_mem = 256MB
-effective_io_concurrency = 4
-random_page_cost = 1.1
-
-# I/O optimizations
-wal_compression = on
-max_wal_size = 2GB
-min_wal_size = 1GB
 EOF
 
     echo "✓ Mode configurations created in $conf_dir"
@@ -99,8 +72,7 @@ apply_mode() {
     # Append mode-specific configuration
     case $mode in
         "sync")
-            # Keep default settings (commented out parallel workers)
-            echo "# Synchronous mode - no parallel workers" >> "$CONF_FILE"
+            cat "/etc/postgresql/18/main/modes/sync.conf" >> "$CONF_FILE"
             ;;
         "bgworkers")
             cat "/etc/postgresql/18/main/modes/bgworkers.conf" >> "$CONF_FILE"
@@ -175,8 +147,7 @@ main() {
     echo "2. bgworkers  - Parallel background workers" 
     echo "3. iouring    - Async I/O with io_uring"
     echo ""
-    echo "Use: ./toggle_pg_mode.sh [sync|bgworkers|iouring]"
-    echo "Or:  ./toggle_pg_mode.sh (to cycle through modes)"
+    echo "Use: ./toggle_pg_config.sh [sync|bgworkers|iouring]"
 }
 
 main "$@"
