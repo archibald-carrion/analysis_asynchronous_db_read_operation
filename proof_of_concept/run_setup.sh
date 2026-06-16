@@ -145,10 +145,29 @@ setup_tpch_tools() {
 
 # ---- Generación y carga de datos ----
 generate_and_load_data() {
-  log "Generating TPC-H data (SF=${SCALE_FACTOR})"
-  # -r 1 ensures dbgen emits refresh files dss.ri (inserts) and dss.rd (deletes)
-  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" -r 1 >>"$LOG_FILE" 2>&1)
+  log "Generating TPC-H base tables (SF=${SCALE_FACTOR})"
+  # tpch-kit v2.17.3 dbgen: base tables only (no -U). Emits *.tbl into DSS_PATH.
+  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" >>"$LOG_FILE" 2>&1)
   [[ -f "$DSS_PATH/nation.tbl" ]] || err "Data generation failed (nation.tbl missing)"
+
+  log "Generating TPC-H refresh sets (SF=${SCALE_FACTOR})"
+  # -U 1 emits the update/refresh stream as orders.tbl.u1 + lineitem.tbl.u1
+  # (RF1 inserts) and delete.1 (RF2 deletes). This dbgen version does NOT
+  # produce the older dss.ri/dss.rd names, so we map them below.
+  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" -U 1 >>"$LOG_FILE" 2>&1)
+  [[ -f "$DSS_PATH/orders.tbl.u1" && -f "$DSS_PATH/lineitem.tbl.u1" && -f "$DSS_PATH/delete.1" ]] \
+    || err "Refresh set generation failed (orders.tbl.u1/lineitem.tbl.u1/delete.1 missing)"
+
+  # Map the v2.17.3 refresh files into the dss.ri/dss.rd names the rest of the
+  # pipeline (rf1.sql/rf2.sql, run_tests.sh) expects:
+  #   dss.ri = orders rows (9 cols) + lineitem rows (16 cols) concatenated;
+  #            rf1.sql splits them at load time with awk by field count.
+  #   dss.rd = bare order keys, one per line; rf2.sql loads them as one column.
+  log "Mapping refresh sets -> dss.ri (RF1 inserts) and dss.rd (RF2 deletes)"
+  cat "$DSS_PATH/orders.tbl.u1" "$DSS_PATH/lineitem.tbl.u1" > "$DSS_PATH/dss.ri"
+  cp "$DSS_PATH/delete.1" "$DSS_PATH/dss.rd"
+  [[ -s "$DSS_PATH/dss.ri" && -s "$DSS_PATH/dss.rd" ]] \
+    || err "Refresh mapping produced empty dss.ri/dss.rd"
 
   log "Creating schema from dss.ddl"
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
@@ -219,7 +238,7 @@ copy_refresh_files() {
     cp "$DSS_PATH/dss.ri" "$dest/"
     cp "$DSS_PATH/dss.rd" "$dest/"
   else
-    warn "Refresh data files not found in $DSS_PATH (expected dss.ri and dss.rd). Run dbgen with -r 1."
+    warn "Refresh data files not found in $DSS_PATH (expected dss.ri and dss.rd). Run dbgen with -U 1 (see generate_and_load_data)."
   fi
 }
 
