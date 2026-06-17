@@ -145,6 +145,14 @@ setup_tpch_tools() {
 
 # ---- Generación y carga de datos ----
 generate_and_load_data() {
+  # DSS_PATH is shared across all scales, and `dbgen -U 1` (below) does NOT rewrite
+  # the base .tbl files -- it only emits the refresh stream. So a stale .tbl from a
+  # previous scale (e.g. an SF=1 orders.tbl) can survive and get loaded over fresh
+  # data, producing an internally inconsistent DB (mismatched orders/lineitem row
+  # counts). Wipe the shared dir before generating to guarantee a clean single-scale set.
+  log "Cleaning stale generated data in $DSS_PATH"
+  rm -f "$DSS_PATH"/*.tbl "$DSS_PATH"/*.tbl.u* "$DSS_PATH"/delete.* "$DSS_PATH"/dss.* 2>/dev/null || true
+
   log "Generating TPC-H base tables (SF=${SCALE_FACTOR})"
   # tpch-kit v2.17.3 dbgen: base tables only (no -U). Emits *.tbl into DSS_PATH.
   (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" >>"$LOG_FILE" 2>&1)
