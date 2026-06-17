@@ -166,16 +166,26 @@ generate_and_load_data() {
   [[ -f "$DSS_PATH/orders.tbl.u1" && -f "$DSS_PATH/lineitem.tbl.u1" && -f "$DSS_PATH/delete.1" ]] \
     || err "Refresh set generation failed (orders.tbl.u1/lineitem.tbl.u1/delete.1 missing)"
 
-  # Map the v2.17.3 refresh files into the dss.ri/dss.rd names the rest of the
-  # pipeline (rf1.sql/rf2.sql, run_tests.sh) expects:
-  #   dss.ri = orders rows (9 cols) + lineitem rows (16 cols) concatenated;
-  #            rf1.sql splits them at load time with awk by field count.
-  #   dss.rd = bare order keys, one per line; rf2.sql loads them as one column.
-  log "Mapping refresh sets -> dss.ri (RF1 inserts) and dss.rd (RF2 deletes)"
+  # Map the v2.17.3 refresh files into the names the RF SQL expects.
+  #   dss.ri          = full concatenated refresh insert set (kept for reference).
+  #   dss.ri.orders   = orders insert rows, ready for client-side \copy into orders.
+  #   dss.ri.lineitem = lineitem insert rows, ready for \copy into lineitem.
+  #   dss.rd          = order keys for RF2 deletes, one per line.
+  #
+  # dbgen emits each row with a TRAILING '|' delimiter, so a 9-column orders row has
+  # 10 awk fields and a 16-column lineitem row has 17. We must strip that trailing
+  # '|' or COPY rejects the row ("extra data after last expected column"). rf1.sql
+  # then does plain relative-path \copy of these pre-split files (psql \copy cannot
+  # interpolate -v variables, so the split/strip is done here at setup time).
+  log "Mapping refresh sets -> dss.ri(.orders/.lineitem) (RF1 inserts) and dss.rd (RF2 deletes)"
   cat "$DSS_PATH/orders.tbl.u1" "$DSS_PATH/lineitem.tbl.u1" > "$DSS_PATH/dss.ri"
-  cp "$DSS_PATH/delete.1" "$DSS_PATH/dss.rd"
-  [[ -s "$DSS_PATH/dss.ri" && -s "$DSS_PATH/dss.rd" ]] \
-    || err "Refresh mapping produced empty dss.ri/dss.rd"
+  sed -E 's/\|$//' "$DSS_PATH/orders.tbl.u1"   > "$DSS_PATH/dss.ri.orders"
+  sed -E 's/\|$//' "$DSS_PATH/lineitem.tbl.u1" > "$DSS_PATH/dss.ri.lineitem"
+  # delete.1 keys also carry a trailing '|'; strip it so dss.rd is a clean single
+  # bigint column for rf2.sql's \copy (otherwise: invalid input syntax for bigint).
+  sed -E 's/\|$//' "$DSS_PATH/delete.1" > "$DSS_PATH/dss.rd"
+  [[ -s "$DSS_PATH/dss.ri.orders" && -s "$DSS_PATH/dss.ri.lineitem" && -s "$DSS_PATH/dss.rd" ]] \
+    || err "Refresh mapping produced empty dss.ri.orders/dss.ri.lineitem/dss.rd"
 
   log "Creating schema from dss.ddl"
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
@@ -241,12 +251,15 @@ copy_refresh_files() {
     err "Refresh functions not found in $TEMPLATES_DIR (expected rf1.sql and rf2.sql). These are hand-authored source files."
   fi
 
-  if [[ -f "$DSS_PATH/dss.ri" && -f "$DSS_PATH/dss.rd" ]]; then
-    log "Copying refresh data files (dss.ri/dss.rd) into $dest"
-    cp "$DSS_PATH/dss.ri" "$dest/"
-    cp "$DSS_PATH/dss.rd" "$dest/"
+  if [[ -f "$DSS_PATH/dss.ri.orders" && -f "$DSS_PATH/dss.ri.lineitem" && -f "$DSS_PATH/dss.rd" ]]; then
+    log "Copying refresh data files (dss.ri.orders/dss.ri.lineitem/dss.rd) into $dest"
+    cp "$DSS_PATH/dss.ri.orders"   "$dest/"
+    cp "$DSS_PATH/dss.ri.lineitem" "$dest/"
+    cp "$DSS_PATH/dss.rd"          "$dest/"
+    # dss.ri (full concatenated set) is kept for reference/debugging only.
+    [[ -f "$DSS_PATH/dss.ri" ]] && cp "$DSS_PATH/dss.ri" "$dest/"
   else
-    warn "Refresh data files not found in $DSS_PATH (expected dss.ri and dss.rd). Run dbgen with -U 1 (see generate_and_load_data)."
+    warn "Refresh data files not found in $DSS_PATH (expected dss.ri.orders, dss.ri.lineitem, dss.rd). Run dbgen with -U 1 (see generate_and_load_data)."
   fi
 }
 

@@ -196,7 +196,7 @@ execute_query() {
 # (dss.ri/dss.rd). If any is missing we abort instead of silently skipping the
 # refresh functions (which would yield an invalid 0.00 QphH).
 ensure_refresh_files() {
-    local required_files=(rf1.sql rf2.sql dss.ri dss.rd)
+    local required_files=(rf1.sql rf2.sql dss.ri.orders dss.ri.lineitem dss.rd)
     for fname in "${required_files[@]}"; do
         local target="$QUERIES_DIR/$fname"
         if [[ -f "$target" ]]; then
@@ -234,7 +234,10 @@ execute_refresh_function() {
     local refresh_file="$QUERIES_DIR/rf${refresh_num}.sql"
     local refresh_dir
     refresh_dir="$(dirname "$refresh_file")"
-    local refresh_ri="$refresh_dir/dss.ri"
+    # RF1 reads the pre-split, trailing-pipe-stripped insert files; RF2 reads the
+    # delete-key file. All produced by run_setup.sh and copied into the query dir.
+    local refresh_ri_orders="$refresh_dir/dss.ri.orders"
+    local refresh_ri_lineitem="$refresh_dir/dss.ri.lineitem"
     local refresh_rd="$refresh_dir/dss.rd"
     
     # Ensure refresh SQL exists. Source of truth is templates/ (hand-authored,
@@ -251,10 +254,12 @@ execute_refresh_function() {
     fi
     
     # Ensure refresh data files exist (mandatory: missing data invalidates the run)
-    if [[ "$refresh_num" == "1" && ! -f "$refresh_ri" ]]; then
-        error "Refresh data file missing: $refresh_ri (required for RF1). Run dbgen -r 1 via run_setup.sh."
-    elif [[ "$refresh_num" == "2" && ! -f "$refresh_rd" ]]; then
-        error "Refresh data file missing: $refresh_rd (required for RF2). Run dbgen -r 1 via run_setup.sh."
+    if [[ "$refresh_num" == "1" ]]; then
+        [[ -f "$refresh_ri_orders" && -f "$refresh_ri_lineitem" ]] || \
+            error "Refresh data missing: $refresh_ri_orders / $refresh_ri_lineitem (required for RF1). Run run_setup.sh for this scale."
+    elif [[ "$refresh_num" == "2" ]]; then
+        [[ -f "$refresh_rd" ]] || \
+            error "Refresh data file missing: $refresh_rd (required for RF2). Run run_setup.sh for this scale."
     fi
 
     info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
@@ -268,15 +273,16 @@ execute_refresh_function() {
     orders_before=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM orders;" 2>/dev/null | tr -d '[:space:]') || orders_before=0
     lineitem_before=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT COUNT(*) FROM lineitem;" 2>/dev/null | tr -d '[:space:]') || lineitem_before=0
     
-    # Execute refresh function without timeout (let it run until completion)
-    # Add verbose timing for debugging
-    if psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
+    # Execute refresh function without timeout (let it run until completion).
+    # Run psql with CWD = the scale's query dir so the relative \copy paths in
+    # rf1.sql/rf2.sql (dss.ri.orders / dss.ri.lineitem / dss.rd) resolve. psql's
+    # \copy is client-side and cannot interpolate -v variables, so the data files
+    # must be referenced by relative path from this working directory.
+    # $output_file is absolute (under RESULTS_DIR), so it is unaffected by the cd.
+    if ( cd "$refresh_dir" && psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
         -c "\set VERBOSITY verbose" \
         -c "\timing on" \
-        -v refresh_dir="$refresh_dir" \
-        -v refresh_ri="$refresh_ri" \
-        -v refresh_rd="$refresh_rd" \
-        -f "$refresh_file" > "$output_file" 2>&1; then
+        -f "$(basename "$refresh_file")" ) > "$output_file" 2>&1; then
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
         
