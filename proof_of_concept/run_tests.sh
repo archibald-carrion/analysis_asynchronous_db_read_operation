@@ -84,29 +84,6 @@ test_postgres_connection() {
     info "PostgreSQL connection successful"
 }
 
-# Detect scale factor dynamically from current data (orders table) when allowed
-detect_scale_factor_from_db() {
-    if [[ "${AUTO_DETECT_SCALE_FACTOR}" != "1" ]]; then
-        return 0
-    fi
-    
-    info "Auto-detecting scale factor from database..."
-    local detected_sf
-    # TPC-H orders cardinality is SF x 1,500,000 (NOT 150,000). Divide by 1.5e6 to
-    # recover SF. Then strip trailing zeros / trailing dot so the value matches the
-    # scale tags run_setup.sh produced (e.g. 0.1 -> "0.1" not "0.10000000000000000000",
-    # 1 -> "1", 10 -> "10"); select_queries_dir() turns "." into "p" for the dir name.
-    detected_sf=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT trim(trailing '.' FROM trim(trailing '0' FROM to_char(GREATEST(COUNT(*)::numeric / 1500000.0, 0.01), 'FM999990.999999999999'))) FROM orders;" 2>/dev/null | tr -d '[:space:]') || true
-    
-    if [[ -n "$detected_sf" ]]; then
-        SCALE_FACTOR="$detected_sf"
-        export SCALE_FACTOR
-        info "Detected scale factor: ${SCALE_FACTOR}"
-    else
-        warning "Could not detect scale factor automatically; using configured value (${SCALE_FACTOR})"
-    fi
-}
-
 # Auto-set query streams based on SF using the TPC-H minimum-streams table
 # (Clause 5.4.1.2): SF<=1 -> 2, 10 -> 3, 30 -> 4, 100 -> 5, 300 -> 6, 1000 -> 7, ...
 # We pick the S for the largest SF band that does not exceed the actual SF.
@@ -777,7 +754,6 @@ main() {
     mkdir -p "$RESULTS_DIR"
     initialize_csv
     test_postgres_connection
-    detect_scale_factor_from_db
     auto_set_query_streams
     select_queries_dir
     
