@@ -22,7 +22,6 @@ ITERATIONS="${ITERATIONS:-2}"
 RUNS_PER_ITERATION="${RUNS_PER_ITERATION:-2}"
 QUERY_STREAMS="${QUERY_STREAMS:-2}"
 SCALE_FACTOR="${SCALE_FACTOR:-1}"
-AUTO_DETECT_SCALE_FACTOR="${AUTO_DETECT_SCALE_FACTOR:-1}"
 AUTO_SET_QUERY_STREAMS="${AUTO_SET_QUERY_STREAMS:-1}"
 IO_METHOD="${IO_METHOD:-${1:-sync}}"
 QUERIES_DIR="${QUERIES_DIR:-}"
@@ -93,7 +92,11 @@ detect_scale_factor_from_db() {
     
     info "Auto-detecting scale factor from database..."
     local detected_sf
-    detected_sf=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT GREATEST(COUNT(*)::numeric / 150000.0, 0.01) FROM orders;" 2>/dev/null | tr -d '[:space:]') || true
+    # TPC-H orders cardinality is SF x 1,500,000 (NOT 150,000). Divide by 1.5e6 to
+    # recover SF. Then strip trailing zeros / trailing dot so the value matches the
+    # scale tags run_setup.sh produced (e.g. 0.1 -> "0.1" not "0.10000000000000000000",
+    # 1 -> "1", 10 -> "10"); select_queries_dir() turns "." into "p" for the dir name.
+    detected_sf=$(psql -X -h localhost -U "$DB_USER" -d "$DB_NAME" -At -c "SELECT trim(trailing '.' FROM trim(trailing '0' FROM to_char(GREATEST(COUNT(*)::numeric / 1500000.0, 0.01), 'FM999990.999999999999'))) FROM orders;" 2>/dev/null | tr -d '[:space:]') || true
     
     if [[ -n "$detected_sf" ]]; then
         SCALE_FACTOR="$detected_sf"
