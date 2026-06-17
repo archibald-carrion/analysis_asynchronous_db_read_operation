@@ -11,3 +11,4 @@ export PGPASSWORD=tpch_password_123
 psql -h localhost -U tpch_user -d tpch_db_10gb -c "\di"
 
 uv run generate_experimental_design.py   --db-sizes 0.1 1 10 40   --replicates 12   --output experimental_design_schedule.csv   --cooldown 1 --randomize-databases
+./run_randomized_experiment.sh
