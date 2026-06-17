@@ -116,6 +116,18 @@ PY
 }
 
 # Choose queries directory based on scale factor (if QUERIES_DIR is not provided)
+# Canonical scale-factor tag for the query dir name (e.g. SF 1, 1.0, 1.00 -> "1p0";
+# 0.1 -> "0p1"; 10 -> "10p0"). The number is normalized to ONE decimal place first so
+# integer and dotted forms of the same scale (the driver passes "1.0"/"10.0", a human
+# may type "1"/"10") never produce divergent dir names. MUST match scale_query_dir() in
+# run_setup.sh. NOTE: one-decimal normalization means sub-0.1 scales (e.g. 0.01) are not
+# distinguishable here; the active design uses 0.1/1/10 only.
+scale_factor_tag() {
+    local norm
+    norm=$(printf "%.1f" "$1")
+    printf "%s" "$norm" | tr '.' 'p' | tr '-' 'm'
+}
+
 select_queries_dir() {
     if [[ -n "$QUERIES_DIR" && -d "$QUERIES_DIR" ]]; then
         info "Using queries directory from QUERIES_DIR: $QUERIES_DIR"
@@ -123,7 +135,7 @@ select_queries_dir() {
     fi
     
     local scale_tag
-    scale_tag=$(printf "%s" "$SCALE_FACTOR" | tr '.' 'p' | tr '-' 'm')
+    scale_tag=$(scale_factor_tag "$SCALE_FACTOR")
     local candidate="$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
 
     # The scale-specific dir is mandatory. Each scale factor has its own parameter

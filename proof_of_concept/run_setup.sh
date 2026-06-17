@@ -324,12 +324,21 @@ generate_query_set() {
   done
 }
 
-# Derive the scale-specific query dir name (e.g. SF=40 -> tpch_queries_sf40,
+# Canonical scale-factor tag (e.g. SF 1, 1.0, 1.00 -> "1p0"; 0.1 -> "0p1";
+# 10 -> "10p0"). The number is normalized to ONE decimal place first so integer and
+# dotted forms of the same scale never produce divergent dir names. MUST match
+# scale_factor_tag() in run_tests.sh. NOTE: one-decimal normalization means sub-0.1
+# scales (e.g. 0.01) are not distinguishable; the active design uses 0.1/1/10 only.
+scale_factor_tag() {
+  local norm
+  norm=$(printf "%.1f" "$1")
+  printf "%s" "$norm" | tr '.' 'p' | tr '-' 'm'
+}
+
+# Derive the scale-specific query dir name (e.g. SF=10 -> tpch_queries_sf10p0,
 # SF=0.1 -> tpch_queries_sf0p1). MUST match select_queries_dir() in run_tests.sh.
 scale_query_dir() {
-  local scale_tag
-  scale_tag=$(printf "%s" "$SCALE_FACTOR" | tr '.' 'p' | tr '-' 'm')
-  printf "%s" "$SCRIPT_DIR/tpch_queries_sf${scale_tag}"
+  printf "%s" "$SCRIPT_DIR/tpch_queries_sf$(scale_factor_tag "$SCALE_FACTOR")"
 }
 
 # ---- Generación de consultas Q1..Q22 ----
