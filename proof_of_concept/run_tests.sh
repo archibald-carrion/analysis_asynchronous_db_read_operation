@@ -124,7 +124,9 @@ PY
 # distinguishable here; the active design uses 0.1/1/10 only.
 scale_factor_tag() {
     local norm
-    norm=$(printf "%.1f" "$1")
+    # LC_ALL=C forces a '.' decimal point: locales like es_* use ',' for %.1f,
+    # which would produce "10,0" and break the tag (tr '.' 'p' finds no dot).
+    norm=$(LC_ALL=C printf "%.1f" "$1")
     printf "%s" "$norm" | tr '.' 'p' | tr '-' 'm'
 }
 
