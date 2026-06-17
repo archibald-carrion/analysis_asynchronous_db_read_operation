@@ -6,9 +6,8 @@ TPC-H **QphH** metric across several database sizes.
 
 - **Paper:** `paper/main.tex`
 - **Experiment code:** `proof_of_concept/`
-- **TPC-H compliance audit:** `proof_of_concept/TPCH_COMPLIANCE.md`
-- **Target runtime:** Linux VM with PostgreSQL 18 (the scripts use `systemctl`,
-  `/proc/sys/vm/drop_caches`, and `/etc/postgresql/18/...` — they do **not** run on macOS).
+- **TPC-H compliance audit:** `proof_of_concept/readme/TPCH_COMPLIANCE.md`
+- **Target runtime:** Linux VM with PostgreSQL 18.
 
 ## What is compared
 

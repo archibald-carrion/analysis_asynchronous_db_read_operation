@@ -8,7 +8,7 @@
 #   ./cleanup_tpch.sh --full       # Full cleanup (removes everything including tools)
 #   ./cleanup_tpch.sh --force      # Force cleanup without prompts
 
-set -e
+set -e # Exit immediately if a command exits with a non-zero status
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,11 +23,9 @@ for arg in "$@"; do
     case $arg in
         --full|--complete)
             FULL_CLEAN=true
-            shift
             ;;
         --force)
             FORCE=true
-            shift
             ;;
         *)
             ;;

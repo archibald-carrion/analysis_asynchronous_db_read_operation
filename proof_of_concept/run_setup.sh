@@ -232,10 +232,66 @@ SQL
     err "Failed adding constraints. Review $LOG_FILE."
   fi
 
-  # No supplemental indexes are created: only the primary/foreign key constraints
-  # above are defined, which is the most that TPC-H Clause 1.5.7 permits without
-  # query-specific tuning. (Extra analytic indexes on non-key columns would make
-  # the database non-compliant.)
+  # ---------------------------------------------------------------------------
+  # Compliant supplemental indexes (TPC-H V3.0.1 spec)
+  # ---------------------------------------------------------------------------
+  # Indexes ARE permitted as "auxiliary data structures" under Clause 1.5.7,
+  # PROVIDED each index references only one base table and only ONE of:
+  #   (a) a Primary-Key column   (listed in Clause 1.4.2.2),
+  #   (b) a Foreign-Key column   (listed in Clause 1.4.2.3), or
+  #   (c) a column of date type   (Clause 1.3),
+  # "whether or not it is defined as a primary/foreign key constraint."
+  # Indexes on non-key, non-date columns (e.g. l_quantity, p_brand) are NOT
+  # permitted. Verbatim clause text is quoted at the bottom of this block.
+  #
+  # Every index below is on an eligible column AND is used by the query set
+  # generated from TPC-H V3.0.1/dbgen/queries. We deliberately omit indexes
+  # that an eligible column already covers or that no query would use:
+  #   * lineitem(l_orderkey) -> already the leading column of pk_lineitem.
+  #   * partsupp(ps_suppkey) -> partsupp is small; scan cost is negligible.
+  #
+  # Index             Eligibility           Queries accelerated
+  # ----------------- --------------------- ----------------------------------
+  # lineitem(l_partkey)  FK col (1.4.2.3)   Q9,Q14,Q17,Q19,Q20  (fixes Q17:
+  #                                         the correlated subquery otherwise
+  #                                         full-scans lineitem per part)
+  # lineitem(l_suppkey)  FK col (1.4.2.3)   Q5,Q7,Q9,Q15,Q21
+  # lineitem(l_shipdate) date col (1.3)     Q1,Q6,Q12,Q14,Q15,Q20 (date ranges)
+  # orders(o_custkey)    FK col (1.4.2.3)   Q3,Q5,Q7,Q10,Q18,Q22
+  # orders(o_orderdate)  date col (1.3)     Q3,Q4,Q5,Q8,Q10        (date ranges)
+  log "Creating compliant supplemental indexes (Clause 1.5.7)"
+  if ! PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 >>"$LOG_FILE" 2>&1 <<'SQL'; then
+CREATE INDEX idx_lineitem_partkey  ON lineitem (l_partkey);   -- FK col, Clause 1.4.2.3
+CREATE INDEX idx_lineitem_suppkey  ON lineitem (l_suppkey);   -- FK col, Clause 1.4.2.3
+CREATE INDEX idx_lineitem_shipdate ON lineitem (l_shipdate);  -- date col, Clause 1.3
+CREATE INDEX idx_orders_custkey    ON orders   (o_custkey);   -- FK col, Clause 1.4.2.3
+CREATE INDEX idx_orders_orderdate  ON orders   (o_orderdate); -- date col, Clause 1.3
+SQL
+    err "Failed creating indexes. Review $LOG_FILE."
+  fi
+
+  # --- Verbatim spec text for future reference -------------------------------
+  # TPC-H V3.0.1, Clause 1.5.7 (Auxiliary Data Structures):
+  #   "Auxiliary data structures that constitute logical replications of data
+  #    from one or more columns of a base table (e.g., indexes, materialized
+  #    views, summary tables, structures used to enforce relational integrity
+  #    constraints) must conform to the provisions of Clause 1.5.6. The
+  #    directives defining and creating these structures are subject to the
+  #    following limitations:
+  #      - Each directive may reference no more than one base table, and may
+  #        not reference other auxiliary structures.
+  #      - Each directive may reference one and only one of the following:
+  #          o A column or set of columns listed in Clause 1.4.2.2, whether or
+  #            not it is defined as a primary key constraint;
+  #          o A column or set of columns listed in Clause 1.4.2.3, whether or
+  #            not it is defined as a foreign key constraint;
+  #          o A column having a date datatype as defined in Clause 1.3.
+  #      - Each directive may contain functions or expressions on explicitly
+  #        permitted columns"
+  #
+  # Clause 1.4.2.3 (Foreign Key columns) lists, among others:
+  #   L_PARTKEY (-> P_PARTKEY), L_SUPPKEY (-> S_SUPPKEY), O_CUSTKEY (-> C_CUSTKEY).
+  # ---------------------------------------------------------------------------
 
   log "ANALYZE..."
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
