@@ -158,34 +158,40 @@ generate_and_load_data() {
   (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" >>"$LOG_FILE" 2>&1)
   [[ -f "$DSS_PATH/nation.tbl" ]] || err "Data generation failed (nation.tbl missing)"
 
-  log "Generating TPC-H refresh sets (SF=${SCALE_FACTOR})"
-  # -U 1 emits the update/refresh stream as orders.tbl.u1 + lineitem.tbl.u1
-  # (RF1 inserts) and delete.1 (RF2 deletes). This dbgen version does NOT
-  # produce the older dss.ri/dss.rd names, so we map them below.
-  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" -U 1 >>"$LOG_FILE" 2>&1)
-  [[ -f "$DSS_PATH/orders.tbl.u1" && -f "$DSS_PATH/lineitem.tbl.u1" && -f "$DSS_PATH/delete.1" ]] \
-    || err "Refresh set generation failed (orders.tbl.u1/lineitem.tbl.u1/delete.1 missing)"
+  # Number of refresh sets to generate. TPC-H (spec 3.0.1 sec 2.6.3/2.8.1) requires a
+  # DISTINCT insert/delete set per RF1/RF2 pair, else RF1 re-inserts existing keys and
+  # hits a pk_orders duplicate-key error. Per run we need: 1 pair (power) + S pairs
+  # (throughput, one per query stream) = 1 + S. S is the stream count from spec
+  # Table 11 (same table run_tests.sh uses). DB is reset to its initial state before
+  # each run (template-copy), so 1+S sets suffice and are reused across runs.
+  local S
+  S=$(refresh_stream_count "$SCALE_FACTOR")
+  local NSETS=$((1 + S))
+  log "Generating ${NSETS} TPC-H refresh sets (SF=${SCALE_FACTOR}, S=${S} streams -> 1 power + ${S} throughput pairs)"
+  # -U N emits N update streams: orders.tbl.u1..uN, lineitem.tbl.u1..uN, delete.1..N.
+  (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" -U "$NSETS" >>"$LOG_FILE" 2>&1)
 
-  # Map the v2.17.3 refresh files into the names the RF SQL expects.
-  #   dss.ri          = full concatenated refresh insert set (kept for reference).
-  #   dss.ri.orders   = orders insert rows, ready for client-side \copy into orders.
-  #   dss.ri.lineitem = lineitem insert rows, ready for \copy into lineitem.
-  #   dss.rd          = order keys for RF2 deletes, one per line.
-  #
-  # dbgen emits each row with a TRAILING '|' delimiter, so a 9-column orders row has
-  # 10 awk fields and a 16-column lineitem row has 17. We must strip that trailing
-  # '|' or COPY rejects the row ("extra data after last expected column"). rf1.sql
-  # then does plain relative-path \copy of these pre-split files (psql \copy cannot
-  # interpolate -v variables, so the split/strip is done here at setup time).
-  log "Mapping refresh sets -> dss.ri(.orders/.lineitem) (RF1 inserts) and dss.rd (RF2 deletes)"
-  cat "$DSS_PATH/orders.tbl.u1" "$DSS_PATH/lineitem.tbl.u1" > "$DSS_PATH/dss.ri"
-  sed -E 's/\|$//' "$DSS_PATH/orders.tbl.u1"   > "$DSS_PATH/dss.ri.orders"
-  sed -E 's/\|$//' "$DSS_PATH/lineitem.tbl.u1" > "$DSS_PATH/dss.ri.lineitem"
-  # delete.1 keys also carry a trailing '|'; strip it so dss.rd is a clean single
-  # bigint column for rf2.sql's \copy (otherwise: invalid input syntax for bigint).
-  sed -E 's/\|$//' "$DSS_PATH/delete.1" > "$DSS_PATH/dss.rd"
-  [[ -s "$DSS_PATH/dss.ri.orders" && -s "$DSS_PATH/dss.ri.lineitem" && -s "$DSS_PATH/dss.rd" ]] \
-    || err "Refresh mapping produced empty dss.ri.orders/dss.ri.lineitem/dss.rd"
+  # Map each dbgen set k into the names the RF SQL expects, split + trailing-pipe
+  # stripped. dbgen emits every row with a TRAILING '|', so a 9-col orders row has
+  # 10 awk fields and a 16-col lineitem row has 17; COPY rejects the extra empty
+  # field unless we strip it (sed 's/\|$//'). Same for delete keys (bigint column).
+  #   dss.ri.orders.k   = orders insert rows for set k
+  #   dss.ri.lineitem.k = lineitem insert rows for set k
+  #   dss.rd.k          = delete order keys for set k
+  # run_tests.sh selects set k per RF call (psql \copy can't take -v vars).
+  log "Mapping ${NSETS} refresh sets -> dss.ri.orders.k / dss.ri.lineitem.k / dss.rd.k"
+  local k
+  for ((k=1; k<=NSETS; k++)); do
+    [[ -f "$DSS_PATH/orders.tbl.u${k}" && -f "$DSS_PATH/lineitem.tbl.u${k}" && -f "$DSS_PATH/delete.${k}" ]] \
+      || err "Refresh set ${k} incomplete (orders.tbl.u${k}/lineitem.tbl.u${k}/delete.${k} missing)"
+    sed -E 's/\|$//' "$DSS_PATH/orders.tbl.u${k}"   > "$DSS_PATH/dss.ri.orders.${k}"
+    sed -E 's/\|$//' "$DSS_PATH/lineitem.tbl.u${k}" > "$DSS_PATH/dss.ri.lineitem.${k}"
+    sed -E 's/\|$//' "$DSS_PATH/delete.${k}"        > "$DSS_PATH/dss.rd.${k}"
+    [[ -s "$DSS_PATH/dss.ri.orders.${k}" && -s "$DSS_PATH/dss.ri.lineitem.${k}" && -s "$DSS_PATH/dss.rd.${k}" ]] \
+      || err "Refresh mapping produced empty files for set ${k}"
+  done
+  # Record how many sets exist so run_tests.sh can validate.
+  echo "$NSETS" > "$DSS_PATH/dss.nsets"
 
   log "Creating schema from dss.ddl"
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
@@ -251,16 +257,39 @@ copy_refresh_files() {
     err "Refresh functions not found in $TEMPLATES_DIR (expected rf1.sql and rf2.sql). These are hand-authored source files."
   fi
 
-  if [[ -f "$DSS_PATH/dss.ri.orders" && -f "$DSS_PATH/dss.ri.lineitem" && -f "$DSS_PATH/dss.rd" ]]; then
-    log "Copying refresh data files (dss.ri.orders/dss.ri.lineitem/dss.rd) into $dest"
-    cp "$DSS_PATH/dss.ri.orders"   "$dest/"
-    cp "$DSS_PATH/dss.ri.lineitem" "$dest/"
-    cp "$DSS_PATH/dss.rd"          "$dest/"
-    # dss.ri (full concatenated set) is kept for reference/debugging only.
-    [[ -f "$DSS_PATH/dss.ri" ]] && cp "$DSS_PATH/dss.ri" "$dest/"
+  if [[ -f "$DSS_PATH/dss.nsets" ]]; then
+    local nsets; nsets=$(cat "$DSS_PATH/dss.nsets")
+    log "Copying ${nsets} numbered refresh data sets (dss.ri.orders.k/dss.ri.lineitem.k/dss.rd.k) into $dest"
+    local k
+    for ((k=1; k<=nsets; k++)); do
+      cp "$DSS_PATH/dss.ri.orders.${k}"   "$dest/"
+      cp "$DSS_PATH/dss.ri.lineitem.${k}" "$dest/"
+      cp "$DSS_PATH/dss.rd.${k}"          "$dest/"
+    done
+    cp "$DSS_PATH/dss.nsets" "$dest/"
   else
-    warn "Refresh data files not found in $DSS_PATH (expected dss.ri.orders, dss.ri.lineitem, dss.rd). Run dbgen with -U 1 (see generate_and_load_data)."
+    warn "Refresh data sets not found in $DSS_PATH (expected dss.nsets + dss.ri.orders.k etc). Run generate_and_load_data first."
   fi
+}
+
+# Minimum query-stream count S for a scale factor, per TPC-H spec Table 11
+# (5.4.1.2). MUST match auto_set_query_streams() in run_tests.sh. Used to size the
+# number of refresh sets (1 power + S throughput pairs).
+refresh_stream_count() {
+  local sf="$1"
+  python3 - "$sf" <<'PY'
+import sys
+sf = float(sys.argv[1] or "1")
+table = [(0, 2), (10, 3), (30, 4), (100, 5), (300, 6), (1000, 7),
+         (3000, 8), (10000, 9), (30000, 10), (100000, 11)]
+s = table[0][1]
+for threshold, count in table:
+    if sf >= threshold:
+        s = count
+    else:
+        break
+print(s)
+PY
 }
 
 # Number of query streams to pre-generate per scale. Must cover the max S that

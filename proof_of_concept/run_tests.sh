@@ -192,32 +192,36 @@ execute_query() {
 }
 
 # Ensure refresh function files and refresh data exist locally.
-# These are mandatory for a valid TPC-H run: RF1/RF2 use dbgen's update sets
-# (dss.ri/dss.rd). If any is missing we abort instead of silently skipping the
-# refresh functions (which would yield an invalid 0.00 QphH).
+# Mandatory for a valid TPC-H run. RF1/RF2 use dbgen's numbered update sets
+# (dss.ri.orders.k / dss.ri.lineitem.k / dss.rd.k, k=1..1+S). If anything is
+# missing we abort rather than silently skip RF (which yields an invalid 0.00 QphH).
 ensure_refresh_files() {
-    local required_files=(rf1.sql rf2.sql dss.ri.orders dss.ri.lineitem dss.rd)
-    for fname in "${required_files[@]}"; do
+    # rf*.sql: hand-authored source, recoverable from templates/.
+    for fname in rf1.sql rf2.sql; do
         local target="$QUERIES_DIR/$fname"
-        if [[ -f "$target" ]]; then
-            continue
-        fi
-
-        # rf*.sql are hand-authored source; recover from templates/ if absent.
-        # dss.* are dbgen output with no source to recover from -> hard error.
-        if [[ "$fname" == rf*.sql ]]; then
-            local fallback="$SCRIPT_DIR/templates/$fname"
-            if [[ -f "$fallback" ]]; then
-                mkdir -p "$QUERIES_DIR"
-                cp "$fallback" "$target"
-                info "Copied $fname from templates/ into $QUERIES_DIR"
-                continue
-            fi
+        [[ -f "$target" ]] && continue
+        local fallback="$SCRIPT_DIR/templates/$fname"
+        if [[ -f "$fallback" ]]; then
+            mkdir -p "$QUERIES_DIR"
+            cp "$fallback" "$target"
+            info "Copied $fname from templates/ into $QUERIES_DIR"
+        else
             error "Missing refresh function: $target (template $fallback not found). RF1/RF2 are mandatory for a valid run."
         fi
+    done
 
-        error "Missing required refresh data: $target.
-Generate it first with dbgen -r 1 via run_setup.sh (per scale factor). RF1/RF2 are mandatory for a valid run."
+    # Numbered refresh data sets: need 1 (power) + QUERY_STREAMS (throughput).
+    # dss.nsets records how many run_setup.sh generated; it must cover what we need.
+    local need=$((1 + QUERY_STREAMS))
+    local have=0
+    [[ -f "$QUERIES_DIR/dss.nsets" ]] && have=$(cat "$QUERIES_DIR/dss.nsets")
+    if [[ "$have" -lt "$need" ]]; then
+        error "Insufficient refresh sets in $QUERIES_DIR: have ${have}, need ${need} (1 power + ${QUERY_STREAMS} throughput). Re-run run_setup.sh for this scale (it sizes sets to 1+S)."
+    fi
+    local k
+    for ((k=1; k<=need; k++)); do
+        [[ -f "$QUERIES_DIR/dss.ri.orders.${k}" && -f "$QUERIES_DIR/dss.ri.lineitem.${k}" && -f "$QUERIES_DIR/dss.rd.${k}" ]] || \
+            error "Missing refresh data for set ${k} in $QUERIES_DIR (dss.ri.orders.${k}/dss.ri.lineitem.${k}/dss.rd.${k}). Re-run run_setup.sh for this scale."
     done
 }
 
@@ -230,16 +234,20 @@ execute_refresh_function() {
     local stream_id=$5
     local refresh_num=$6
     local execution_order=$7
-    
+    local set_num=$8   # which dbgen refresh set (1..1+S) this RF1/RF2 pair uses
+
     local refresh_file="$QUERIES_DIR/rf${refresh_num}.sql"
-    local refresh_dir
-    refresh_dir="$(dirname "$refresh_file")"
-    # RF1 reads the pre-split, trailing-pipe-stripped insert files; RF2 reads the
-    # delete-key file. All produced by run_setup.sh and copied into the query dir.
-    local refresh_ri_orders="$refresh_dir/dss.ri.orders"
-    local refresh_ri_lineitem="$refresh_dir/dss.ri.lineitem"
-    local refresh_rd="$refresh_dir/dss.rd"
-    
+    # TPC-H requires a distinct insert/delete set per RF pair (spec 2.6.3/2.8.1).
+    # run_setup.sh produced numbered sets dss.ri.orders.k / dss.ri.lineitem.k /
+    # dss.rd.k in the query dir. psql \copy cannot interpolate -v variables, and the
+    # refresh stream may run concurrently with query streams, so we STAGE set
+    # ${set_num} into a private temp dir under fixed names (dss.ri.orders /
+    # dss.ri.lineitem / dss.rd) and run psql with CWD there. The rf SQL then uses
+    # plain relative \copy of those fixed names.
+    local src_orders="$QUERIES_DIR/dss.ri.orders.${set_num}"
+    local src_lineitem="$QUERIES_DIR/dss.ri.lineitem.${set_num}"
+    local src_rd="$QUERIES_DIR/dss.rd.${set_num}"
+
     # Ensure refresh SQL exists. Source of truth is templates/ (hand-authored,
     # version-controlled); run_setup.sh normally copies it into the scale dir.
     if [[ ! -f "$refresh_file" ]]; then
@@ -252,18 +260,29 @@ execute_refresh_function() {
             error "Refresh function file $refresh_file not found (template $fallback missing). RF is mandatory for a valid run."
         fi
     fi
-    
-    # Ensure refresh data files exist (mandatory: missing data invalidates the run)
+
+    # Ensure refresh data for this set exists (mandatory: missing data invalidates run)
     if [[ "$refresh_num" == "1" ]]; then
-        [[ -f "$refresh_ri_orders" && -f "$refresh_ri_lineitem" ]] || \
-            error "Refresh data missing: $refresh_ri_orders / $refresh_ri_lineitem (required for RF1). Run run_setup.sh for this scale."
+        [[ -f "$src_orders" && -f "$src_lineitem" ]] || \
+            error "Refresh data missing for set ${set_num}: $src_orders / $src_lineitem (required for RF1). Re-run run_setup.sh for this scale."
     elif [[ "$refresh_num" == "2" ]]; then
-        [[ -f "$refresh_rd" ]] || \
-            error "Refresh data file missing: $refresh_rd (required for RF2). Run run_setup.sh for this scale."
+        [[ -f "$src_rd" ]] || \
+            error "Refresh data file missing for set ${set_num}: $src_rd (required for RF2). Re-run run_setup.sh for this scale."
     fi
 
-    info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num}..."
-    
+    # Stage this set into a private temp dir with the fixed names rf SQL expects.
+    local refresh_dir
+    refresh_dir="$(mktemp -d "${TMPDIR:-/tmp}/tpch_rf_${test_type}_s${stream_id}_set${set_num}.XXXXXX")"
+    cp "$refresh_file" "$refresh_dir/"
+    if [[ "$refresh_num" == "1" ]]; then
+        cp "$src_orders"   "$refresh_dir/dss.ri.orders"
+        cp "$src_lineitem" "$refresh_dir/dss.ri.lineitem"
+    else
+        cp "$src_rd" "$refresh_dir/dss.rd"
+    fi
+
+    info "Executing Iteration ${iteration} Run ${run_in_iteration} ${test_type} Stream ${stream_id} RF${refresh_num} (set ${set_num})..."
+
     export PGPASSWORD="$DB_PASSWORD"
     local start_time=$(date +%s.%N)
     local output_file="$RESULTS_DIR/${IO_METHOD}_iter${iteration}_run${run_in_iteration}_${test_type}_s${stream_id}_rf${refresh_num}.txt"
@@ -297,12 +316,14 @@ execute_refresh_function() {
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},${execution_time},${rows_affected},$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
         
         info "RF${refresh_num} completed in ${execution_time}s"
+        rm -rf "$refresh_dir"
         return 0
     else
         local exit_code=$?
         warning "Refresh function RF${refresh_num} failed (exit $exit_code) ${test_type} stream ${stream_id} run ${run_id} [file: $refresh_file]"
         errorlog_file "RF${refresh_num} ${test_type} stream ${stream_id} run ${run_id} (psql exit $exit_code)" "$output_file"
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${refresh_num},${execution_order},0,0,$(date '+%Y-%m-%d %H:%M:%S')" >> "$REFRESH_CSV"
+        rm -rf "$refresh_dir"
         return 1
     fi
 }
@@ -314,10 +335,13 @@ execute_power_test() {
     local run_in_iteration=$3
     
     log "Starting Power Test (Iteration $iteration, Run $run_in_iteration)"
-    
-    # RF1 before queries
-    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "1"
-    
+
+    # TPC-H spec 2.8.1: the power test executes exactly ONE RF1/RF2 pair, using the
+    # FIRST refresh set. (The DB is reset to its initial state before each run, so
+    # set 1 is always pristine.)
+    # RF1 before queries (set 1)
+    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "1" "1"
+
     # Execute all 22 queries sequentially (stream 0)
     local power_order=($(generate_random_order))
     local execution_order=2
@@ -325,9 +349,9 @@ execute_power_test() {
         execute_query "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "$query_num" "$execution_order"
         execution_order=$((execution_order + 1))
     done
-    
-    # RF2 after queries
-    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "24"
+
+    # RF2 after queries (set 1)
+    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "24" "1"
     
     log "Power Test (Iteration $iteration, Run $run_in_iteration) completed"
 }
@@ -378,27 +402,20 @@ execute_throughput_test() {
         pids+=($!)
     done
     
-    # Execute refresh stream continuously in parallel with query streams
+    # Execute the refresh stream in parallel with the query streams.
+    # TPC-H spec 2.8.1: the throughput test executes exactly S RF1/RF2 pairs (S =
+    # number of query streams), each using a DISTINCT refresh set. Power used set 1,
+    # so throughput uses sets 2 .. S+1 (one fresh set per pair -> no pk collision).
+    # This is a bounded sequence, NOT a continuous loop.
     (
         local execution_order=$refresh_start
-        while :; do
-            # Always run at least one RF1/RF2 pair before considering exit
-            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order"
+        local pair
+        for pair in $(seq 1 "$QUERY_STREAMS"); do
+            local set_num=$((pair + 1))   # sets 2..S+1
+            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order" "$set_num"
             execution_order=$((execution_order + 1))
-            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order"
+            execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order" "$set_num"
             execution_order=$((execution_order + 1))
-
-            # Stop when all query pids are done
-            local any_running=0
-            for pid in "${pids[@]}"; do
-                if kill -0 "$pid" 2>/dev/null; then
-                    any_running=1
-                    break
-                fi
-            done
-            if [[ $any_running -eq 0 ]]; then
-                break
-            fi
         done
     ) &
     local refresh_pid=$!
