@@ -148,8 +148,8 @@ def calculate_power_metric(complete_csv: Path, refresh_csv: Path, scale_factor: 
 
 def calculate_throughput_metric(interval_csv: Path, scale_factor: float) -> Optional[float]:
     """
-    Calculate Throughput@Size according to the formula: (S × 22 × 3600) / Ts
-    Note: The image formula does not include scale factor multiplication.
+    Calculate Throughput@Size according to TPC-H Clause 5.4.2.1:
+        (S × 22 × 3600) / Ts × SF
     """
     with interval_csv.open(newline="") as handle:
         reader = csv.DictReader(handle)
@@ -163,8 +163,8 @@ def calculate_throughput_metric(interval_csv: Path, scale_factor: float) -> Opti
     if not measurement or measurement <= 0 or not stream_count or stream_count <= 0:
         return None
 
-    # Throughput@Size según la imagen: (S × 22 × 3600) / Ts (sin multiplicar por SF)
-    return (stream_count * 22.0 * 3600.0) / measurement
+    # Throughput@Size (TPC-H Clause 5.4.x): (S × 22 × 3600) / Ts × SF
+    return (stream_count * 22.0 * 3600.0) / measurement * scale_factor
 
 
 def calculate_metrics(files: ResultFiles, scale_factor: float) -> Tuple[Optional[float], Optional[float]]:

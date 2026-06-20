@@ -165,7 +165,8 @@ def compute_metrics(artifacts: RunArtifacts, scale_factor: float) -> Tuple[Optio
     geom_mean = math.exp(log_sum / 24.0)
 
     power_metric = (3600.0 * scale_factor) / geom_mean
-    throughput_metric = (stream_count * 22 * 3600.0) / measurement
+    # Throughput@Size (TPC-H Clause 5.4.2.1): (S × 22 × 3600) / Ts × SF
+    throughput_metric = (stream_count * 22 * 3600.0) / measurement * scale_factor
 
     if power_metric <= 0 or throughput_metric <= 0:
         return None, "non-positive power or throughput metric"
