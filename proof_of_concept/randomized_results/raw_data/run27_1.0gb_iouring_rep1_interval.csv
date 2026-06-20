@@ -1,0 +1,2 @@
+io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time
+iouring,1,1,1,THROUGHPUT,2,36.356311167,1781802137.796135884,1781802174.152447051

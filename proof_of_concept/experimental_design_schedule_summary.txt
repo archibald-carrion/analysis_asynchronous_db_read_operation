@@ -1,0 +1,30 @@
+======================================================================
+EXPERIMENTAL DESIGN SUMMARY
+======================================================================
+Generated: 2026-06-17 21:11:57
+
+Design Type: CRD
+Total Runs: 108
+Balanced Design: Yes
+
+Factors:
+  - I/O Methods: bgworkers, iouring, sync
+  - Database Sizes: 10GB, 100MB, 1GB
+  - Replicates per treatment: 12
+
+Time Estimate:
+  - Total experiment duration: 55.8 hours
+  - Approximately 2.3 days
+
+Treatment Allocation:
+  - 100MB + bgworkers: 12 runs
+  - 100MB + iouring: 12 runs
+  - 100MB + sync: 12 runs
+  - 1GB + bgworkers: 12 runs
+  - 1GB + iouring: 12 runs
+  - 1GB + sync: 12 runs
+  - 10GB + bgworkers: 12 runs
+  - 10GB + iouring: 12 runs
+  - 10GB + sync: 12 runs
+
+======================================================================
