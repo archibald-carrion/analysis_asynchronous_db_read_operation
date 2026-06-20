@@ -79,6 +79,22 @@ keeps generation reproducible on the target platform while preserving an authori
 reference for validation. (Result-set correctness verification against `ref_data/` is still
 not performed — see §4/§5 — and is disclosed as a limitation.)
 
+**Generator version & pinning (Clause 4.2.1.3).** Clause 4.2.1.3 (via TPC Policies 5.3.1)
+makes it the sponsor's responsibility to ensure the DBGEN version corresponds to the
+specification revision in use. The spec revision targeted here is **3.0.1**; the generator
+is gregrahn/tpch-kit, whose dbgen self-reports internal version **2.17.3**. These are not
+mismatched: "2.17.3" is the dbgen C-source version line (the official tree is at 2.x), while
+"3.0.1" is the *specification document* revision — the two are numbered independently, and
+the data-generation and refresh-set (RF1/RF2) semantics are unchanged across the 2.18 → 3.0.1
+range, so this dbgen produces the artifacts the 3.0.1 spec defines. To discharge the
+"sponsor's responsibility" reproducibly, `run_setup.sh` **pins tpch-kit to a fixed commit**
+(`TPCH_KIT_COMMIT=852ad0a5ee31ebefeed884cea4188781dd9613a3`) rather than floating `HEAD`:
+the clone checks out that exact SHA, re-running setup re-pins instead of `git pull`-ing
+forward, and the pinned short SHA is logged on every run so each result set is stamped with
+the generator that produced it. Because this is a TPC-H–*derived* research benchmark and not
+an audited submission, the third-party fork is acceptable; the pin + version stamp is what
+makes the generator provenance defensible.
+
 ## 2. Query set (Q1–Q22)
 
 - The generated `q1.sql … q22.sql` (under `tpch_queries_sf<tag>/stream*/`) are genuine
