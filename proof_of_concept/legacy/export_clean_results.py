@@ -27,9 +27,14 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-DEFAULT_SCHEDULE = Path(__file__).with_name("experimental_design_schedule.csv")
-DEFAULT_RESULTS_DIR = Path(__file__).with_name("randomized_results").joinpath("raw_data")
-DEFAULT_OUTPUT = Path(__file__).with_name("randomized_results").joinpath("clean_tpch_results.csv")
+# This script lives in proof_of_concept/legacy/, but the orchestrator
+# (run_randomized_experiment.sh) writes the schedule and randomized_results/ to
+# its own dir, proof_of_concept/ -- one level up. Anchor the defaults there so a
+# no-arg invocation finds the real files instead of looking inside legacy/.
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_SCHEDULE = PROJECT_DIR / "experimental_design_schedule.csv"
+DEFAULT_RESULTS_DIR = PROJECT_DIR / "randomized_results" / "raw_data"
+DEFAULT_OUTPUT = PROJECT_DIR / "randomized_results" / "clean_tpch_results.csv"
 DEBUG = os.environ.get("EXPORT_DEBUG", "").strip().lower() not in ("", "0", "false", "no")
 
 
@@ -264,6 +269,15 @@ def main() -> None:
     debug("Results directory:", args.results_dir.resolve())
     debug("Results dir exists:", args.results_dir.exists())
     debug("Output path:", args.output.resolve())
+
+    if not args.schedule.exists():
+        print(f"Schedule file not found: {args.schedule.resolve()}")
+        print(
+            "Run the experiment first (run_randomized_experiment.sh writes the "
+            "schedule and randomized_results/ to proof_of_concept/), or pass an "
+            "explicit --schedule path."
+        )
+        raise SystemExit(1)
 
     cleaned = summarize_runs(args.schedule, args.results_dir, args.include_non_completed)
     if not cleaned:
