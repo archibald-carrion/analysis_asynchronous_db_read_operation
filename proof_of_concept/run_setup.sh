@@ -8,7 +8,7 @@
 #   ./run_setup.sh                # modo normal (crea DB, datos y queries)
 #   ./run_setup.sh --clean        # limpia y recompila tpch-kit
 #   ./run_setup.sh --queries-only # solo genera queries Q1-Q22 (NO toca la DB)
-#   DB_NAME=tpch DB_USER=tpch_user DB_PASSWORD=xxx SCALE_FACTOR=40 ./run_setup.sh
+#   DB_NAME=tpch DB_USER=tpch_user DB_PASSWORD=xxx SCALE_FACTOR=10 ./run_setup.sh
 #   SCALE_FACTOR=0.01 DB_NAME=tpch_db_10mb ./run_setup.sh --queries-only
 
 set -euo pipefail
@@ -109,6 +109,13 @@ EOF
 }
 
 # ---- tpch-kit (gregrahn) ----
+# Pinned to a fixed commit for reproducibility and TPC-H Clause 4.2.1.3 provenance
+# (the sponsor must be able to state exactly which DBGEN produced the data). gregrahn
+# is a third-party fork whose dbgen self-reports version 2.17.3; this commit's data-gen
+# semantics correspond to the TPC-H 3.0.1 spec we target. Do NOT float HEAD: bump this
+# SHA deliberately and re-validate if you ever update the generator.
+TPCH_KIT_COMMIT="852ad0a5ee31ebefeed884cea4188781dd9613a3"
+
 setup_tpch_tools() {
   local kit_dir="$SCRIPT_DIR/tpch-kit"
   local dbgen_dir="$kit_dir/dbgen"
@@ -119,12 +126,22 @@ setup_tpch_tools() {
   fi
 
   if [[ ! -d "$dbgen_dir" ]]; then
-    log "Cloning tpch-kit (gregrahn)..."
+    log "Cloning tpch-kit (gregrahn) pinned at ${TPCH_KIT_COMMIT}..."
     git clone https://github.com/gregrahn/tpch-kit.git "$kit_dir" >>"$LOG_FILE" 2>&1
+    (cd "$kit_dir" && git checkout --quiet "$TPCH_KIT_COMMIT") >>"$LOG_FILE" 2>&1 \
+      || err "Could not check out pinned tpch-kit commit ${TPCH_KIT_COMMIT}"
   else
-    log "Updating tpch-kit..."
-    (cd "$kit_dir" && git pull --ff-only >>"$LOG_FILE" 2>&1) || true
+    log "Re-pinning existing tpch-kit to ${TPCH_KIT_COMMIT}..."
+    # Fetch in case the pinned commit isn't present locally yet, then check it out.
+    # We intentionally do NOT 'git pull' (that would float to a moving HEAD).
+    (cd "$kit_dir" \
+      && git fetch --quiet origin "$TPCH_KIT_COMMIT" 2>/dev/null \
+      ; git checkout --quiet "$TPCH_KIT_COMMIT") >>"$LOG_FILE" 2>&1 \
+      || err "Could not check out pinned tpch-kit commit ${TPCH_KIT_COMMIT}"
   fi
+
+  # Stamp the generator version into the log for per-run provenance (Clause 4.2.1.3).
+  log "tpch-kit pinned commit: $(cd "$kit_dir" && git rev-parse --short HEAD 2>/dev/null)"
 
   log "Building dbgen/qgen for Linux + PostgreSQL"
   if $LOW_MEMORY; then

@@ -361,11 +361,16 @@ execute_run() {
         [[ -f "$SCRIPT_DIR/tpch_interval_results.csv" ]] && \
             mv "$SCRIPT_DIR/tpch_interval_results.csv" "${result_prefix}_interval.csv"
         
-        # Calculate QphH metric using TPC-H formulas
-        local qphh_result=$(calculate_qphh "${result_prefix}_complete.csv" "${result_prefix}_refresh.csv" "${result_prefix}_interval.csv")
-        
-        # Update schedule with results
-        update_schedule_status "$run_order" "COMPLETED" "$duration" "$qphh_result" "$start_timestamp"
+        # Calculate QphH, Power and Throughput metrics using TPC-H formulas.
+        # calculate_qphh emits all three space-separated: "<qphh> <power> <throughput>".
+        local metrics_result
+        metrics_result=$(calculate_qphh "${result_prefix}_complete.csv" "${result_prefix}_refresh.csv" "${result_prefix}_interval.csv")
+        local qphh_result power_result throughput_result
+        read -r qphh_result power_result throughput_result <<<"$metrics_result"
+
+        # Update schedule with results (persist power/throughput so the export
+        # step copies them rather than recomputing from raw CSVs).
+        update_schedule_status "$run_order" "COMPLETED" "$duration" "$qphh_result" "$start_timestamp" "$power_result" "$throughput_result"
         unset SKIP_POSTGRES_RESTART
         
         return 0
@@ -422,7 +427,7 @@ power_times = collect_times(complete_path, 22)
 refresh_times = collect_times(refresh_path, 2)
 
 if not power_times or not refresh_times:
-    print("0.00")
+    print("0.00 0.00 0.00")
     sys.exit(0)
 
 with open(interval_path, newline='') as handle:
@@ -430,7 +435,7 @@ with open(interval_path, newline='') as handle:
     interval_row = next((row for row in reader if row.get('test_type', '').upper() == 'THROUGHPUT'), None)
 
 if not interval_row:
-    print("0.00")
+    print("0.00 0.00 0.00")
     sys.exit(0)
 
 measurement = parse_positive(interval_row.get('measurement_interval_seconds'))
@@ -441,7 +446,7 @@ except (ValueError, TypeError):
     stream_count = 0
 
 if measurement is None or stream_count <= 0:
-    print("0.00")
+    print("0.00 0.00 0.00")
     sys.exit(0)
 
 try:
@@ -458,19 +463,22 @@ power_metric = (3600.0 * scale_factor) / geom_mean
 throughput_metric = (stream_count * 22 * 3600.0) / measurement * scale_factor
 
 if power_metric <= 0 or throughput_metric <= 0:
-    print("0.00")
+    print("0.00 0.00 0.00")
     sys.exit(0)
 
 # QphH@Size según la imagen: 1 / sqrt((1 / Power@Size) × (1 / Throughput@Size))
 qphh = 1.0 / math.sqrt((1.0 / power_metric) * (1.0 / throughput_metric))
-print(f"{qphh:.2f}")
+# Emit all three metrics (space-separated) so the caller can persist power and
+# throughput to the schedule too, instead of forcing export_clean_results.py to
+# recompute them from the raw CSVs later (which risked an SF-source mismatch).
+print(f"{qphh:.2f} {power_metric:.2f} {throughput_metric:.2f}")
 PY
 )
-    
+
     if [[ -n "$result" ]]; then
         echo "$result"
     else
-        echo "0.00"
+        echo "0.00 0.00 0.00"
     fi
 }
 
@@ -481,10 +489,12 @@ update_schedule_status() {
     local runtime_sec=$3
     local qphh=$4
     local timestamp=$5
-    
+    local power=${6:-}
+    local throughput=${7:-}
+
     # Create temporary file with updated status
     awk -F',' -v run="$run_order" -v status="$status" -v runtime="$runtime_sec" \
-        -v qphh="$qphh" -v ts="$timestamp" \
+        -v qphh="$qphh" -v ts="$timestamp" -v power="$power" -v throughput="$throughput" \
         'BEGIN {OFS=","}
          NR==1 {
              for (i = 1; i <= NF; i++) {
@@ -492,6 +502,8 @@ update_schedule_status() {
                  else if ($i == "actual_runtime_sec") runtime_col = i
                  else if ($i == "execution_timestamp") ts_col = i
                  else if ($i == "qphh_result") qphh_col = i
+                 else if ($i == "power_result") power_col = i
+                 else if ($i == "throughput_result") throughput_col = i
              }
              print
              next
@@ -501,6 +513,10 @@ update_schedule_status() {
              if (runtime_col) $runtime_col = runtime
              if (ts_col) $ts_col = ts
              if (qphh_col) $qphh_col = qphh
+             # Only overwrite power/throughput when a value was provided (the
+             # FAILED path passes none, so existing/empty cells are preserved).
+             if (power_col && power != "") $power_col = power
+             if (throughput_col && throughput != "") $throughput_col = throughput
              print
              next
          }
