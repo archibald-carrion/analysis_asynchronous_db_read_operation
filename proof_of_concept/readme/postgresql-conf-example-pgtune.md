@@ -278,8 +278,11 @@ dynamic_shared_memory_type = posix      # the default is usually the first optio
 #checkpoint_completion_target = 0.9     # checkpoint target duration, 0.0 - 1.0
 #checkpoint_flush_after = 0             # measured in pages, 0 disables
 #checkpoint_warning = 30s               # 0 disables
-max_wal_size = 1GB
-min_wal_size = 80MB
+# max_wal_size / min_wal_size are set in the pgTune block at the end of this
+# file (8GB / 2GB). The stock values below are commented out so the file has a
+# single source of truth and Postgres logs no duplicate-setting warning.
+#max_wal_size = 1GB
+#min_wal_size = 80MB
 
 # - Prefetching during recovery -
 
