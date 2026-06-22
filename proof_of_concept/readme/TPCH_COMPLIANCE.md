@@ -23,13 +23,14 @@ describe the workload honestly as a **TPC-H–derived benchmark**.
 | Stream count S by SF | ✅ Fixed — official S-per-SF table |
 | QphH metric formula | ✅ Verified vs Clauses 5.4.1/5.4.2/5.4.3 — Throughput `× SF` fixed |
 | Refresh functions (RF1/RF2) execution | ✅ Fixed — mandatory, hard-error if data missing |
-| Distinct refresh set per RF pair (Clauses 2.6.3/2.8.1) | ✅ Fixed — `dbgen -U (1+S)`; set 1 power, sets 2..S+1 throughput |
-| Database evolution across runs (Clause 2.8) | ⚠️ **Intentional deviation** — DB reset per run (see §10) |
+| Distinct refresh set per RF pair (Clauses 2.6.3/2.8.1) | ✅ Fixed — `dbgen -U`; each RF pair uses the next unused set from a persistent per-DB counter |
+| Database evolution across runs (Clause 2.8 / 2.8.1) | ✅ Compliant — endless reuse; DB evolves in place, never reloaded, set counter advances across runs (see §9) |
 | Query parameter substitution per stream | ✅ Fixed — distinct per-stream parameter sets |
 | Result-set correctness verification | ⚠️ Not performed (disclosed limitation) |
 
 Overall: **structurally faithful** to TPC-H (tests, sequencing, metric math). The
-methodology-hardening fixes below were applied before the re-run; the one remaining
+methodology-hardening fixes below were applied before the re-run. Cross-run database
+evolution is now spec-exact (Clause 2.8.1 endless reuse, §9); the one remaining
 deviation (answer-set verification) is disclosed as a limitation, not an error.
 
 > **Fixes applied (2026-06-13).** Sections 2, 3, and 6 below reflect the original audit
@@ -156,13 +157,16 @@ violating `pk_orders` (`ERROR 23505: duplicate key ... (o_orderkey)`). The power
 > using the -U option. This option will produce as many sets of rows as required for use in
 > multi-stream tests."* Clause 2.7.3 says the same for RF2's delete keys.
 
-✅ **Status after fixes.** `run_setup.sh` now runs `dbgen -U (1 + S)`, where **S** is the
-stream count for the scale (spec Table 11; see §6). It splits each dbgen set *k* into
-`dss.ri.orders.k` / `dss.ri.lineitem.k` / `dss.rd.k` (trailing-pipe stripped) and records the
-count in `dss.nsets`. `execute_refresh_function` takes a **set number** and stages that set's
-files for `\copy`. The **power test uses set 1**; the **throughput test uses sets 2..S+1**
-(one distinct set per RF1/RF2 pair). No RF1 ever re-inserts another RF1's keys → no PK
-collision. This matches Clauses 2.6.3 / 2.7.3 and the per-pair set usage of Clause 2.8.1.
+✅ **Status after fixes.** `run_setup.sh` now runs `dbgen -U N` with **N sized to the whole
+experiment** for the DB: `N = (1 + S) × (runs + safety)`, **S** = stream count for the scale
+(spec Table 11; see §6). It splits each dbgen set *k* into `dss.ri.orders.k` /
+`dss.ri.lineitem.k` / `dss.rd.k` (trailing-pipe stripped) and records the count in `dss.nsets`.
+`execute_refresh_function` takes a **set number** and stages that set's files for `\copy`. Set
+numbers come from a **persistent per-DB counter** (`dss.next_set`, `next_refresh_set` in
+`run_tests.sh`): each run allocates the next `1 + S` unused sets (1 power + S throughput), and the
+counter advances across runs (endless reuse, §9). No set index is ever reused, so no RF1 ever
+re-inserts another RF1's keys → no PK collision. This matches Clauses 2.6.3 / 2.7.3 and the
+per-pair set usage of Clause 2.8.1.
 
 > **Implementation note (`\copy` constraint).** psql's client-side `\copy` cannot interpolate
 > `-v` variables, and server-side `COPY FROM PROGRAM` requires `pg_execute_server_program`
@@ -187,7 +191,8 @@ power test. (Query *order* is randomized, which the spec permits.)
 - Launches **S parallel query streams** (`QUERY_STREAMS`), each running all 22 queries in a
   randomized order, as background processes.
 - Runs a **parallel refresh stream** issuing **exactly S RF1/RF2 pairs** — one per query
-  stream — each using a **distinct** refresh set (sets 2..S+1; set 1 was the power test).
+  stream — each using a **distinct** refresh set (the S sets after this run's power-test set,
+  allocated from the persistent per-DB counter; see §3/§9).
 - Measurement interval `Ts` is wall-clock from first stream start to last stream end,
   written to `tpch_interval_results.csv`.
 
@@ -236,16 +241,16 @@ against missing data (requires exactly 22 query + 2 RF timings, else returns `0.
 |---|---|---|---|
 | 2a | Per-stream query parameters | Single qgen set shared by all streams | ✅ Distinct per-stream sets (`generate_query_set` seed `1000+i`; `execute_query` reads `stream<id>/`) |
 | 3a | RF execution / missing `dss.*` | Silent skip → invalid `0.00` QphH; `_fixed` synthetic files unused | ✅ Mandatory + hard `error` abort if RF SQL / refresh data missing |
-| 3b | Distinct refresh set per RF pair | Single set (`dbgen -U 1`) reused → RF1 PK collision (Clause 2.6.3 violated) | ✅ `dbgen -U (1+S)`; set 1 = power, sets 2..S+1 = throughput; numbered `dss.*.k` files |
+| 3b | Distinct refresh set per RF pair | Single set (`dbgen -U 1`) reused → RF1 PK collision (Clause 2.6.3 violated) | ✅ `dbgen -U N` (N=(1+S)×runs); each RF pair uses the next set from a persistent per-DB counter; numbered `dss.*.k` files |
 | 5a | Throughput refresh stream | Unbounded loop until streams finish (re-used set, not per Clause 2.8.1) | ✅ Exactly S RF1/RF2 pairs, one distinct set each |
-| 2.8 | Cross-run database evolution | (n/a) | ⚠️ **Intentional deviation**: per-run reset via `CREATE DATABASE … TEMPLATE` instead of spec's evolve-with-counter (see §9) |
+| 2.8 | Cross-run database evolution | Per-run reset via `CREATE DATABASE … TEMPLATE` (was an intentional deviation) | ✅ **Now compliant**: endless reuse (Clause 2.8.1) — DB evolves in place, never reloaded, per-DB set counter advances across runs (see §9) |
 | 6a | Stream count S by SF | `S = floor(SF)` proxy | ✅ Official S-per-SF table (spec Table 11) in `auto_set_query_streams` |
 | tp | Throughput@Size formula | `(S×22×3600)/Ts` — **missing `× SF`** (deviated from Clause 5.4.2.1) | ✅ `(S×22×3600)/Ts × SF` in all 3 calc sites (`run_tests.sh` ×2, `run_randomized_experiment.sh`) |
 | — | `configure_postgresql()` no-op | Logged misleading "Using … configuration" | ✅ Log clarified: real switch done by `toggle_pg_config.sh` |
 | — | `tpch_metrics_summary.txt` text | Vestigial "15 iterations / 2 runs / lower QphH" | ✅ Rewritten to the live CRD reality (1 run/treatment; 144-run aggregate) |
 | 4/5 | Result-set correctness check | Not performed | ⚠️ **Still not performed** — disclosed limitation (no official answer-set validation) |
 
-## 9. Database evolution vs. per-run reset (Clause 2.8) — intentional deviation
+## 9. Database evolution across runs (Clause 2.8 / 2.8.1) — compliant (endless reuse)
 
 TPC-H Clause 2.8 ("Database Evolution Process") governs database state **across runs** of the
 performance test:
@@ -262,51 +267,49 @@ performance test:
 > RF1/RF2 pair during the power test … the next five RF1/RF2 pairs [in the throughput test] …
 > The next run would use the sets … for the seventh RF1/RF2 pair, and continue from there."*
 
-Because RF1 inserts and RF2 deletes, a run **mutates** the database. The spec's model is to let
-that mutation accumulate and never reload, tracking a global refresh-set counter. This left us
-two ways to satisfy correctness across our 108-run design (3 io_methods × 3 scales × 12
-replicates):
+Because RF1 inserts and RF2 deletes, a run **mutates** the database. We follow the spec's model
+directly: the database is **reused in place and evolves; it is never reloaded or reset** between
+runs. Correctness is guaranteed by a global, per-database refresh-set counter that advances one
+RF1/RF2 set per pair, exactly as Clause 2.8.1 prescribes.
 
-### Option A — Spec-exact evolution (endless reuse + counter)
-Generate `N = (1 + S) × (runs against that DB)` distinct DBGen sets per scale (108 sets for
-SF 0.1/1, 144 for SF 10), persist a refresh-set counter across **every** `run_tests.sh`
-invocation, and never reload the DB. Fully matches Clause 2.8/2.8.1.
+### Implementation (endless reuse + counter)
 
-- **Cost:** must generate and track 108–144 distinct refresh sets per scale and thread a
-  durable counter through the whole harness.
-- **Confound:** each run starts from a **different** database state (run #1 vs. run #50 operate
-  on different data), so the io_method comparison is made across drifting DB contents — only
-  partially mitigated by randomized run order.
+- **Set pool.** `run_setup.sh` generates `N = (1 + S) × (runs against that DB + safety)` distinct
+  DBGen `-U` sets per scale (the run count is read from `experimental_design_schedule.csv` by
+  `db_name`; `SET_SAFETY_RUNS`, default 2, absorbs FAILED-run retries). For the 36-runs-per-DB
+  design that is **114 sets** for SF 0.1 / 1 (S=2) and **152 sets** for SF 10 (S=3). Each set is
+  ~0.1% of the tables, so the whole pool is tiny on disk.
+- **Counter.** `run_tests.sh` keeps a persistent per-DB counter `dss.next_set` in the scale's
+  query dir (survives across the once-per-run `run_tests.sh` invocations). `next_refresh_set`
+  hands out the next unused index and advances it. Each run allocates `1` set for the power test
+  and `S` sets for the throughput test (allocated **before** forking the parallel streams so the
+  counter is only ever written serially). So run #1 uses sets 1..(1+S), run #2 uses the next
+  block, and so on — no set index is ever reused, and **no RF1 re-inserts an existing key**
+  (the `pk_orders` collision that the old per-run reset and the earlier single-set bug both
+  risked cannot occur).
+- **No reload.** There is no `CREATE DATABASE … TEMPLATE`, no `<db>_tmpl`, and no per-run drop /
+  recreate. `run_randomized_experiment.sh` simply points each run at the (evolving) database.
 
-### Option B — Per-run reset (chosen)
-Reset each database to its **pristine initial state before every run**, so each run is a
-**complete, self-contained, valid TPC-H performance test** (power + throughput, the spec's 1+S
-refresh pairs on a correct database). Only `1 + S` refresh sets are needed per scale (3 for
-SF 0.1/1, 4 for SF 10), reused across runs because the DB is restored each time. Reset is done
-with PostgreSQL's `CREATE DATABASE … TEMPLATE` (a fast server-side file copy from a one-time
-pristine snapshot, `<db>_tmpl`), executed **before** the timed measurement window.
+This is **fully compliant with Clause 2.8 / 2.8.1**: the DB is endlessly reused, never reloaded,
+with careful tracking of how many RF1/RF2 pairs have executed.
 
-**Why we chose B.** The paper's object of study is a **comparison of I/O methods**
-(sync / bgworkers / io_uring), and Option B makes that comparison cleaner and more defensible:
+### Trade-off (threat to validity)
 
-1. **Every run is an identical, valid TPC-H experiment.** Each run executes a correct
-   power+throughput test (RF1 → 22 Q → RF2, then S concurrent streams + S refresh pairs) on a
-   correct, fully-populated database — i.e. each individual run *is* a compliant TPC-H run.
-2. **No DB-drift confound.** All 108 runs start from byte-identical state, so any QphH
-   difference is attributable to the io_method (the single experimental factor), not to which
-   accumulated data state the run happened to land on.
-3. **Far simpler and more robust** than threading a 108–144-set counter through the harness:
-   fewer moving parts, no fragile cross-invocation state, and crash-resilient (a failed run
-   leaves the next run a clean template to restore from).
+Endless reuse means the database **evolves across runs** — run #1 and run #36 operate on slightly
+different data (old rows deleted, new rows inserted at the advancing key frontier). For a
+*comparative* study of I/O methods this introduces a small **nuisance factor**: a QphH difference
+could in principle reflect the accumulated data state rather than the io_method. Two things bound
+it: (a) each RF1/RF2 pair changes only ~0.1% of the tables and nets cardinality back to baseline,
+so total drift over the experiment is small relative to table size; and (b) the **randomized run
+order** (CRD) distributes any drift effect roughly evenly across the three io_methods rather than
+confounding it with one. This is the standard TPC-H operating model and is disclosed in the
+paper's threats-to-validity (replacing the previous "per-run reset" deviation note).
 
-**Disclosed deviation.** This **departs from Clause 2.8's** "do not rebuild/reload between
-runs / evolve with a global counter" model. We reset *between* runs; we do **not** reload
-*within* a run (each run's power+throughput still executes on a single un-reloaded database, as
-the spec requires *within* a test). This is an intentional methodological choice for a
-controlled comparative study, not an oversight, and is reported in the paper's limitations /
-threats-to-validity alongside the answer-set caveat (§4/§5). It does not affect the validity of
-any single run as a TPC-H power/throughput measurement; it only changes the cross-run database
-lineage from "evolving" to "identical."
+> **History.** Earlier revisions reset the DB to a pristine template before every run (only `1+S`
+> sets needed, every run byte-identical). That avoided DB drift but was a disclosed **deviation**
+> from Clause 2.8 ("do not rebuild/reload / evolve with a counter"), doubled on-disk size per
+> scale, and cost ~30 min per run at 30 GB for the `CREATE DATABASE … TEMPLATE` copy. It was
+> removed in favor of the spec-exact endless-reuse model above.
 
 ## 10. Conclusion
 
@@ -314,22 +317,22 @@ The benchmark is a **faithful TPC-H–derived implementation**: reference schema
 Q1–Q22, correct power/throughput sequencing, a correct QphH formula, and — after the
 2026-06-13 and 2026-06-16 fixes — **distinct per-stream query parameters**, the **official
 S-per-SF stream counts**, **guaranteed refresh-function execution** (fail-loud, never silently
-skipped), and a **distinct DBGen refresh set per RF1/RF2 pair** (set 1 for the power test,
-sets 2..S+1 for the throughput test, per Clauses 2.6.3 / 2.7.3 / 2.8.1 — no more PK collisions).
-Each individual run is a complete, valid TPC-H power+throughput test. It is suitable for a
-*comparative* study of PostgreSQL I/O methods (sync / bgworkers / io_uring), which is the
+skipped), a **distinct DBGen refresh set per RF1/RF2 pair**, and **spec-exact cross-run database
+evolution** (Clause 2.8.1 endless reuse: the DB is reused in place and never reloaded, with a
+persistent per-DB set counter handing each RF pair a fresh, never-reused set — no PK collisions;
+see §9). Each individual run is a complete, valid TPC-H power+throughput test. It is suitable for
+a *comparative* study of PostgreSQL I/O methods (sync / bgworkers / io_uring), which is the
 paper's goal.
 
-Two disclosed deviations remain, both intentional and reported in the paper's limitations /
-threats to validity:
+One disclosed limitation remains, reported in the paper's threats to validity, plus one
+benign nuisance factor:
 
-1. **Cross-run database evolution (Clause 2.8).** We **reset each database to its pristine
-   state before every run** (template copy) instead of evolving it with a global refresh-set
-   counter, so every run is an identical, self-contained valid TPC-H test and the io_method
-   comparison carries no DB-drift confound (see §9). This changes only the cross-run database
-   lineage, not the validity of any single run.
-2. **No answer-set correctness verification (§4/§5).** There is no TPC sponsor and no
+1. **No answer-set correctness verification (§4/§5).** There is no TPC sponsor and no
    result-set validation against official `ref_data/`.
+2. **Cross-run database evolution (nuisance factor, not a deviation).** Under endless reuse the
+   DB evolves across runs, so runs operate on slightly different data (~0.1% drift per RF pair,
+   netting back to baseline cardinality). This is the spec's own model; the randomized run order
+   spreads any drift effect across io_methods (see §9).
 
 The paper should describe it as a **"TPC-H–based / TPC-H–derived workload"** rather than an
 audited TPC-H QphH, and note both deviations above.

@@ -177,14 +177,22 @@ generate_and_load_data() {
 
   # Number of refresh sets to generate. TPC-H (spec 3.0.1 sec 2.6.3/2.8.1) requires a
   # DISTINCT insert/delete set per RF1/RF2 pair, else RF1 re-inserts existing keys and
-  # hits a pk_orders duplicate-key error. Per run we need: 1 pair (power) + S pairs
-  # (throughput, one per query stream) = 1 + S. S is the stream count from spec
-  # Table 11 (same table run_tests.sh uses). DB is reset to its initial state before
-  # each run (template-copy), so 1+S sets suffice and are reused across runs.
+  # hits a pk_orders duplicate-key error. Per run we need 1 pair (power) + S pairs
+  # (throughput) = 1+S. S is the stream count from spec Table 11.
+  #
+  # "Endless reuse" (Clause 2.8.1): the DB is NEVER reloaded between runs; it evolves,
+  # and a persistent per-DB counter (dss.next_set in run_tests.sh) hands each run the
+  # NEXT 1+S unused sets. So the pool must cover EVERY run of this DB across the whole
+  # experiment: NSETS = (1+S) * (runs_for_this_db + SET_SAFETY_RUNS). The safety margin
+  # absorbs FAILED-run retries (which burn sets that are not reclaimed). Each set is
+  # ~0.1% of the tables (tiny), so a large pool costs little disk.
   local S
   S=$(refresh_stream_count "$SCALE_FACTOR")
-  local NSETS=$((1 + S))
-  log "Generating ${NSETS} TPC-H refresh sets (SF=${SCALE_FACTOR}, S=${S} streams -> 1 power + ${S} throughput pairs)"
+  local RUNS; RUNS=$(runs_for_this_db)
+  local SAFETY="${SET_SAFETY_RUNS:-2}"
+  local PER_RUN=$((1 + S))
+  local NSETS=$(( PER_RUN * (RUNS + SAFETY) ))
+  log "Generating ${NSETS} TPC-H refresh sets (SF=${SCALE_FACTOR}, S=${S}, ${PER_RUN} per run x (${RUNS} runs + ${SAFETY} safety) for ${DB_NAME})"
   # -U N emits N update streams: orders.tbl.u1..uN, lineitem.tbl.u1..uN, delete.1..N.
   (cd "$DSS_CONFIG" && ./dbgen -v -f -s "$SCALE_FACTOR" -U "$NSETS" >>"$LOG_FILE" 2>&1)
 
@@ -363,6 +371,34 @@ for threshold, count in table:
         break
 print(s)
 PY
+}
+
+# How many scheduled runs target this database, for sizing the refresh-set pool.
+# Under TPC-H "endless reuse" (Clause 2.8.1) the DB is never reloaded; each run
+# consumes 1+S fresh RF sets from a persistent counter, so the pool must cover every
+# run of this DB across the whole experiment. We count rows in the randomized schedule
+# whose db_name column matches $DB_NAME. Overridable via RUNS_FOR_THIS_DB for setups
+# done before the schedule exists (or for ad-hoc runs).
+runs_for_this_db() {
+  if [[ -n "${RUNS_FOR_THIS_DB:-}" ]]; then
+    echo "$RUNS_FOR_THIS_DB"
+    return 0
+  fi
+  local schedule="${SCHEDULE_FILE:-$SCRIPT_DIR/experimental_design_schedule.csv}"
+  if [[ -f "$schedule" ]]; then
+    # db_name is column 6 (see run_randomized_experiment.sh). Count matching data rows.
+    local n
+    n=$(tail -n +2 "$schedule" | awk -F',' -v db="$DB_NAME" '$6 == db {c++} END {print c+0}')
+    if [[ "$n" -gt 0 ]]; then
+      echo "$n"
+      return 0
+    fi
+  fi
+  # No schedule (or no matching rows): fall back to a single run's worth of sets.
+  # The setup still works; the pool just won't cover a long experiment until re-run
+  # with the schedule present or RUNS_FOR_THIS_DB set.
+  warn "Could not determine run count for $DB_NAME from $schedule; defaulting RF-set pool to 1 run. Set RUNS_FOR_THIS_DB or run with the schedule present for a full-experiment pool."
+  echo 1
 }
 
 # Number of query streams to pre-generate per scale. Must cover the max S that

@@ -122,9 +122,11 @@ check_prerequisites() {
     for db in "${required_dbs[@]}"; do
         if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$db"; then
             log "✓ Database exists: $db"
-            # Snapshot the pristine DB into a template NOW, before any run mutates it.
-            # Each run is reset from this template (see reset_database_from_template).
-            ensure_db_template "$db"
+            # Endless reuse (TPC-H Clause 2.8.1): the DB is reused in place across all
+            # runs and evolves via the refresh functions; it is never reloaded or reset.
+            # run_setup.sh provisions a refresh-set pool sized to every run of this DB,
+            # and run_tests.sh advances a persistent per-DB set counter so no RF1 ever
+            # re-inserts an existing key.
         else
             error "❌ Database not found: $db
 
@@ -201,55 +203,14 @@ switch_database() {
     log "Database set to: $db_name"
 }
 
-# Reset a database to its pristine initial state before each run.
-#
-# RF1/RF2 mutate the DB (inserts/deletes) during every run. To keep each run a
-# controlled, identical-starting-point comparison of io_methods (an intentional
-# deviation from TPC-H spec 2.8, which evolves the DB), we restore the DB from a
-# pristine template before each run via PostgreSQL's CREATE DATABASE ... TEMPLATE
-# (a fast server-side file copy).
-#
-# The template "<db>_tmpl" is created ONCE, lazily, from the first pristine state we
-# see. IMPORTANT: this must run BEFORE any RF has mutated the DB, i.e. the databases
-# built by run_setup.sh must still be untouched the first time this is called.
-db_template_name() { echo "${1}_tmpl"; }
-
-ensure_db_template() {
-    local db_name=$1
-    local tmpl; tmpl=$(db_template_name "$db_name")
-    if sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$tmpl"; then
-        return 0   # template already exists
-    fi
-    info "Creating pristine template $tmpl from $db_name (one-time)..."
-    # Terminate connections to the source, then copy it as a template.
-    sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL >/dev/null 2>&1 || error "Failed to create template $tmpl from $db_name"
-SELECT pg_terminate_backend(pid) FROM pg_stat_activity
- WHERE datname = '$db_name' AND pid <> pg_backend_pid();
-CREATE DATABASE $tmpl TEMPLATE $db_name;
-SQL
-    log "Template created: $tmpl"
-}
-
-reset_database_from_template() {
-    local db_name=$1
-    local tmpl; tmpl=$(db_template_name "$db_name")
-
-    if ! sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$tmpl"; then
-        error "Template $tmpl not found; cannot reset $db_name. (ensure_db_template should have created it.)"
-    fi
-
-    info "Resetting $db_name from template $tmpl..."
-    # Drop the working DB and recreate it from the pristine template. Terminate any
-    # lingering sessions first so DROP/CREATE don't fail with "database in use".
-    sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL >/dev/null 2>&1 || error "Failed to reset $db_name from $tmpl"
-SELECT pg_terminate_backend(pid) FROM pg_stat_activity
- WHERE datname IN ('$db_name', '$tmpl') AND pid <> pg_backend_pid();
-DROP DATABASE IF EXISTS $db_name;
-CREATE DATABASE $db_name TEMPLATE $tmpl;
-ALTER DATABASE $db_name OWNER TO ${DB_USER:-tpch_user};
-SQL
-    log "$db_name reset to pristine state"
-}
+# NOTE: there is intentionally NO per-run database reset. Under TPC-H "endless reuse"
+# (Clause 2.8.1) the test database is reused in place and evolves via RF1/RF2; it is
+# never reloaded or restored between runs. Correctness is guaranteed by run_tests.sh
+# advancing a persistent per-DB refresh-set counter (dss.next_set), so each run's RF1
+# pairs use fresh insert/delete sets and never collide with existing keys. run_setup.sh
+# provisions a set pool sized to every run of the DB. (Previously this script kept a
+# "<db>_tmpl" template and dropped/recreated the DB before each run; that was a slow,
+# space-heavy deviation from Clause 2.8 and has been removed.)
 
 # Configure I/O method
 configure_io_method() {
@@ -296,8 +257,9 @@ execute_run() {
     # Switch database
     switch_database "$db_name"
 
-    # Reset DB to pristine state so every run starts identical (RF1/RF2 mutate it).
-    reset_database_from_template "$db_name"
+    # No DB reset: the database is reused in place and evolves across runs (TPC-H
+    # endless reuse, Clause 2.8.1). run_tests.sh advances the per-DB refresh-set
+    # counter so this run uses fresh, never-before-used RF1/RF2 sets.
 
     # Configure I/O method
     configure_io_method "$io_method"

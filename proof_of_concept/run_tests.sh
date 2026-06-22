@@ -207,8 +207,13 @@ execute_query() {
 
 # Ensure refresh function files and refresh data exist locally.
 # Mandatory for a valid TPC-H run. RF1/RF2 use dbgen's numbered update sets
-# (dss.ri.orders.k / dss.ri.lineitem.k / dss.rd.k, k=1..1+S). If anything is
+# (dss.ri.orders.k / dss.ri.lineitem.k / dss.rd.k, k=1..N). If anything is
 # missing we abort rather than silently skip RF (which yields an invalid 0.00 QphH).
+#
+# TPC-H Clause 2.8.1 "endless reuse": the database is NOT reloaded between runs; it
+# evolves. A persistent per-DB counter (dss.next_set, see next_refresh_set) hands each
+# RF1/RF2 pair the NEXT unused set so no RF1 ever re-inserts an existing key. run_setup.sh
+# provisions a pool of (1+S)*runs sets; here we just verify enough remain for THIS run.
 ensure_refresh_files() {
     # rf*.sql: hand-authored source, recoverable from templates/.
     for fname in rf1.sql rf2.sql; do
@@ -224,19 +229,40 @@ ensure_refresh_files() {
         fi
     done
 
-    # Numbered refresh data sets: need 1 (power) + QUERY_STREAMS (throughput).
-    # dss.nsets records how many run_setup.sh generated; it must cover what we need.
+    # Initialize the per-DB RF-set counter on first use. It records the next UNUSED
+    # set index; it persists in QUERIES_DIR (per-scale, survives across run_tests.sh
+    # invocations) and advances by 1+S each run for the life of the experiment.
+    [[ -f "$QUERIES_DIR/dss.next_set" ]] || echo 1 > "$QUERIES_DIR/dss.next_set"
+
+    # This run will consume 1 (power) + QUERY_STREAMS (throughput) fresh sets starting
+    # at dss.next_set. dss.nsets records how many run_setup.sh generated; verify enough
+    # remain in the pool (not just that 1+S exist at all).
     local need=$((1 + QUERY_STREAMS))
     local have=0
     [[ -f "$QUERIES_DIR/dss.nsets" ]] && have=$(cat "$QUERIES_DIR/dss.nsets")
-    if [[ "$have" -lt "$need" ]]; then
-        error "Insufficient refresh sets in $QUERIES_DIR: have ${have}, need ${need} (1 power + ${QUERY_STREAMS} throughput). Re-run run_setup.sh for this scale (it sizes sets to 1+S)."
+    local next; next=$(cat "$QUERIES_DIR/dss.next_set")
+    local remaining=$((have - next + 1))
+    if [[ "$remaining" -lt "$need" ]]; then
+        error "Refresh-set pool exhausted in $QUERIES_DIR: ${remaining} set(s) remain (next=${next}, total=${have}), need ${need} (1 power + ${QUERY_STREAMS} throughput) for this run. The experiment consumed more runs (incl. FAILED-run retries) than provisioned. Re-run run_setup.sh for this scale to regenerate a larger pool (sized (1+S)*runs), or raise SET_SAFETY_RUNS."
     fi
+    # Verify the specific sets this run will use are present and well-formed.
     local k
-    for ((k=1; k<=need; k++)); do
+    for ((k=next; k<next+need; k++)); do
         [[ -f "$QUERIES_DIR/dss.ri.orders.${k}" && -f "$QUERIES_DIR/dss.ri.lineitem.${k}" && -f "$QUERIES_DIR/dss.rd.${k}" ]] || \
             error "Missing refresh data for set ${k} in $QUERIES_DIR (dss.ri.orders.${k}/dss.ri.lineitem.${k}/dss.rd.${k}). Re-run run_setup.sh for this scale."
     done
+}
+
+# Allocate the next unused refresh set index for this DB and advance the persistent
+# counter. MUST be called serially from the orchestrating shell (NOT from a parallel
+# throughput subshell) so two streams never race on dss.next_set: callers pre-allocate
+# every set a run needs up front, before forking. Echoes the allocated index.
+next_refresh_set() {
+    local counter="$QUERIES_DIR/dss.next_set"
+    local n
+    n=$(cat "$counter")
+    echo $((n + 1)) > "$counter"
+    echo "$n"
 }
 
 # Execute refresh function with robust error handling
@@ -351,10 +377,14 @@ execute_power_test() {
     log "Starting Power Test (Iteration $iteration, Run $run_in_iteration)"
 
     # TPC-H spec 2.8.1: the power test executes exactly ONE RF1/RF2 pair, using the
-    # FIRST refresh set. (The DB is reset to its initial state before each run, so
-    # set 1 is always pristine.)
-    # RF1 before queries (set 1)
-    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "1" "1"
+    # NEXT unused refresh set from the persistent per-DB counter (endless reuse: the DB
+    # is never reloaded, so each run must advance to a fresh set to avoid re-inserting
+    # existing keys). RF1 and RF2 of the pair share the same set index.
+    local power_set
+    power_set=$(next_refresh_set)
+    info "Power test using refresh set ${power_set}"
+    # RF1 before queries (set $power_set)
+    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "1" "1" "$power_set"
 
     # Execute all 22 queries sequentially (stream 0). Clause 5.3.5.4: the power
     # test uses ordering number O(00) -> Appendix A ordered set 0.
@@ -365,8 +395,8 @@ execute_power_test() {
         execution_order=$((execution_order + 1))
     done
 
-    # RF2 after queries (set 1)
-    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "24" "1"
+    # RF2 after queries (same set as RF1)
+    execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "POWER" "0" "2" "24" "$power_set"
     
     log "Power Test (Iteration $iteration, Run $run_in_iteration) completed"
 }
@@ -444,7 +474,19 @@ execute_throughput_test() {
     local pids=()
     local queries_per_stream=22
     local refresh_start=$((QUERY_STREAMS * queries_per_stream + 1))
-    
+
+    # Pre-allocate the S refresh sets this test will use, BEFORE forking. The counter
+    # (dss.next_set) must only ever be advanced by this orchestrating shell; allocating
+    # inside the parallel refresh subshell would race nothing here (single refresh
+    # stream), but pre-allocating keeps all counter writes serial and lets the subshell
+    # capture the indices by value. One distinct set per RF1/RF2 pair (TPC-H 2.8.1).
+    local tput_sets=()
+    local pair
+    for pair in $(seq 1 "$QUERY_STREAMS"); do
+        tput_sets+=("$(next_refresh_set)")
+    done
+    info "Throughput test using refresh sets: ${tput_sets[*]}"
+
     # Execute query streams in parallel
     for stream in $(seq 1 $QUERY_STREAMS); do
         (
@@ -462,14 +504,14 @@ execute_throughput_test() {
     
     # Execute the refresh stream in parallel with the query streams.
     # TPC-H spec 2.8.1: the throughput test executes exactly S RF1/RF2 pairs (S =
-    # number of query streams), each using a DISTINCT refresh set. Power used set 1,
-    # so throughput uses sets 2 .. S+1 (one fresh set per pair -> no pk collision).
-    # This is a bounded sequence, NOT a continuous loop.
+    # number of query streams), each using a DISTINCT refresh set. The sets were
+    # pre-allocated above into tput_sets[] (the next S unused indices after the power
+    # test's set), so each pair uses a fresh set -> no pk collision. This is a bounded
+    # sequence, NOT a continuous loop.
     (
         local execution_order=$refresh_start
-        local pair
-        for pair in $(seq 1 "$QUERY_STREAMS"); do
-            local set_num=$((pair + 1))   # sets 2..S+1
+        local set_num
+        for set_num in "${tput_sets[@]}"; do
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "1" "$execution_order" "$set_num"
             execution_order=$((execution_order + 1))
             execute_refresh_function "$run_id" "$iteration" "$run_in_iteration" "THROUGHPUT" "R" "2" "$execution_order" "$set_num"
