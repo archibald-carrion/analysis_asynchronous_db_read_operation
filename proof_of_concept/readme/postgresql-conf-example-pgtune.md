@@ -930,22 +930,21 @@ include_dir = 'conf.d'                  # include files ending in '.conf' from
 # Add settings for extensions here
 
 ## OUR VALUES FOR THE VM as recommended by pgtune:
-max_connections = 300
+max_connections = 40
 shared_buffers = 8GB
 effective_cache_size = 24GB
-maintenance_work_mem = 2GB
+maintenance_work_mem = 4GB
 checkpoint_completion_target = 0.9
 wal_buffers = 16MB
-default_statistics_target = 100
-random_page_cost = 4
-effective_io_concurrency = 2
-work_mem = 27235kB
+default_statistics_target = 500
+random_page_cost = 1.1
+effective_io_concurrency = 1000
+work_mem = 87381kB
 huge_pages = try
-jit = off
 wal_compression = lz4
 autovacuum_work_mem = 2GB
-min_wal_size = 2GB
-max_wal_size = 8GB
+min_wal_size = 4GB
+max_wal_size = 16GB
 max_worker_processes = 8
 max_parallel_workers_per_gather = 4
 max_parallel_workers = 8
