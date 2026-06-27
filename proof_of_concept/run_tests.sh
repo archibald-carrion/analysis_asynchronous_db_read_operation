@@ -188,8 +188,14 @@ execute_query() {
         local end_time=$(date +%s.%N)
         local execution_time=$(echo "$end_time - $start_time" | bc)
         
-        # Get row count (excluding headers)
-        local row_count=$(tail -n +3 "$result_file" | grep -c . 2>/dev/null || echo "0")
+        # Get row count (excluding headers). grep -c exits 1 and prints "0" when
+        # there are no matching lines; the old "|| echo 0" then appended a second
+        # "0" on its own line, producing a row_count of $'0\n0' that split the CSV
+        # row across two physical lines and made calculate_qphh return 0.00. Take
+        # only the first line and strip whitespace so row_count is always a single
+        # clean integer even for legitimately empty (0-row) query results.
+        local row_count=$(tail -n +3 "$result_file" | grep -c . 2>/dev/null | head -1 | tr -d '[:space:]')
+        [[ -z "$row_count" ]] && row_count=0
         
         # Write to CSV
         echo "${IO_METHOD},${iteration},${run_in_iteration},${run_id},${test_type},${stream_id},${query_num},${execution_order},${execution_time},${row_count},$(date '+%Y-%m-%d %H:%M:%S')" >> "$CSV_OUTPUT"

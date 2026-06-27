@@ -171,17 +171,26 @@ restart_postgresql() {
     info "Restarting PostgreSQL..."
     sudo systemctl restart postgresql
     sleep 10
-    
+
+    # Readiness probe must match how run_tests.sh actually connects: TCP to
+    # localhost as $DB_USER with a password. The old probe used the local
+    # postgres superuser over the Unix socket, which starts accepting
+    # connections BEFORE the TCP listener is fully ready for password auth.
+    # That gap is what produced the "server sent an error response during SSL
+    # exchange" failures (runs 34/35): a benchmark query connected over TCP
+    # while the server was still mid-startup. Probe the real path instead.
+    export PGPASSWORD="${DB_PASSWORD:-tpch_password_123}"
+    local probe_user="${DB_USER:-tpch_user}"
     local retries=0
-    while ! sudo -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; do
+    while ! psql -h localhost -U "$probe_user" -d postgres -c "SELECT 1;" >/dev/null 2>&1; do
         retries=$((retries + 1))
         if [[ $retries -gt 30 ]]; then
-            error "PostgreSQL did not start after restart"
+            error "PostgreSQL did not accept TCP connections as $probe_user after restart"
         fi
         sleep 2
     done
-    
-    info "PostgreSQL restarted successfully"
+
+    info "PostgreSQL restarted successfully (TCP auth ready)"
 }
 
 # Switch to specific database
@@ -367,6 +376,18 @@ execute_run() {
         metrics_result=$(calculate_qphh "${result_prefix}_complete.csv" "${result_prefix}_refresh.csv" "${result_prefix}_interval.csv")
         local qphh_result power_result throughput_result
         read -r qphh_result power_result throughput_result <<<"$metrics_result"
+
+        # A zero QphH means run_tests.sh exited 0 but calculate_qphh could not
+        # produce a valid metric (missing/short result CSV, no POWER stream_id=0
+        # rows, etc.). Such a run "succeeded" by exit code yet has no usable
+        # result, so flag it FAILED_ZERO_METRICS rather than letting a 0.00 row
+        # pass as COMPLETED. Runtime is preserved for diagnostics.
+        if [[ -z "$qphh_result" || "$qphh_result" == "0.00" || "$qphh_result" == "0" ]]; then
+            warning "Run $run_order exited 0 but produced zero metrics (no valid QphH); marking FAILED_ZERO_METRICS (log: $run_log | errors: $run_error_log)"
+            update_schedule_status "$run_order" "FAILED_ZERO_METRICS" "$duration" "0" "$start_timestamp"
+            unset SKIP_POSTGRES_RESTART
+            return 1
+        fi
 
         # Update schedule with results (persist power/throughput so the export
         # step copies them rather than recomputing from raw CSVs).
@@ -558,9 +579,9 @@ execute_experiment() {
             continue
         fi
         
-        # Log if retrying a failed run
-        if [[ "$status" == "FAILED" ]]; then
-            info "Retrying run $run_order (previously failed)"
+        # Log if retrying a failed run (hard failure or zero-metric failure)
+        if [[ "$status" == FAILED* ]]; then
+            info "Retrying run $run_order (previously $status)"
         fi
         
         # Execute the run
