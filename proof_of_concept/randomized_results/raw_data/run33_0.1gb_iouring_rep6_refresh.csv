@@ -1,7 +1,0 @@
-io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,refresh_number,execution_order,execution_time_seconds,rows_affected,timestamp
-iouring,1,1,1,POWER,0,1,1,.919088635,742,2026-06-18 12:19:32
-iouring,1,1,1,POWER,0,2,24,.379570103,736,2026-06-18 12:19:41
-iouring,1,1,1,THROUGHPUT,R,1,45,.499116356,768,2026-06-18 12:19:42
-iouring,1,1,1,THROUGHPUT,R,2,46,.380005625,751,2026-06-18 12:19:43
-iouring,1,1,1,THROUGHPUT,R,1,47,.498011108,780,2026-06-18 12:19:44
-iouring,1,1,1,THROUGHPUT,R,2,48,.416628592,763,2026-06-18 12:19:44

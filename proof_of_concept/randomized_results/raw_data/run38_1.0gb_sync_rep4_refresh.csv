@@ -1,0 +1,7 @@
+io_method,iteration,run_in_iteration,global_run_id,test_type,stream_id,refresh_number,execution_order,execution_time_seconds,rows_affected,timestamp
+sync,1,1,1,POWER,0,1,1,2.820059466,7322,2026-06-26 07:15:24
+sync,1,1,1,POWER,0,2,24,.238193190,7505,2026-06-26 07:15:37
+sync,1,1,1,THROUGHPUT,R,1,45,1.025474774,7576,2026-06-26 07:15:38
+sync,1,1,1,THROUGHPUT,R,2,46,.313908493,7452,2026-06-26 07:15:39
+sync,1,1,1,THROUGHPUT,R,1,47,.689270540,7331,2026-06-26 07:15:40
+sync,1,1,1,THROUGHPUT,R,2,48,.339296556,7516,2026-06-26 07:15:40
