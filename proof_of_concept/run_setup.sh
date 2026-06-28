@@ -320,6 +320,25 @@ SQL
 
   log "ANALYZE..."
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
+
+  # Reclaim the base .tbl text now that it is loaded into the DB. These files
+  # (lineitem.tbl alone is ~74G at SF100) are read ONLY by the \copy load loop
+  # above and are never touched again -- the DB is the system of record, and the
+  # refresh data the run needs (dss.ri.*/dss.rd.*) is separate and gets staged
+  # into the scale query dir by copy_refresh_files(). At SF100 the base text
+  # plus the loaded DB do not both fit on a 434G volume, so leaving it in place
+  # is what fills the disk. We delete ONLY the base tables; the small refresh
+  # artifacts (dss.*, *.tbl.u*, delete.*, dss.nsets) are kept for the run.
+  if [[ "${KEEP_TBL:-0}" != "1" ]]; then
+    log "Reclaiming base .tbl files in $DSS_PATH (loaded into DB; set KEEP_TBL=1 to retain)"
+    local _tbl freed=0
+    for _tbl in region nation part supplier partsupp customer orders lineitem; do
+      rm -f "$DSS_PATH/${_tbl}.tbl" 2>/dev/null && freed=1
+    done
+    [[ "$freed" == "1" ]] && log "Base .tbl files removed; refresh data (dss.*) retained"
+  else
+    log "KEEP_TBL=1 set; retaining base .tbl files in $DSS_PATH"
+  fi
 }
 
 # Copy the refresh artifacts into a scale-specific query dir:
