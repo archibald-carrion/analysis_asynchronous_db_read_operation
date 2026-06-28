@@ -320,25 +320,6 @@ SQL
 
   log "ANALYZE..."
   PGPASSWORD="$DB_PASSWORD" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -c "ANALYZE;" >>"$LOG_FILE" 2>&1
-
-  # Reclaim the base .tbl text now that it is loaded into the DB. These files
-  # (lineitem.tbl alone is ~74G at SF100) are read ONLY by the \copy load loop
-  # above and are never touched again -- the DB is the system of record, and the
-  # refresh data the run needs (dss.ri.*/dss.rd.*) is separate and gets staged
-  # into the scale query dir by copy_refresh_files(). At SF100 the base text
-  # plus the loaded DB do not both fit on a 434G volume, so leaving it in place
-  # is what fills the disk. We delete ONLY the base tables; the small refresh
-  # artifacts (dss.*, *.tbl.u*, delete.*, dss.nsets) are kept for the run.
-  if [[ "${KEEP_TBL:-0}" != "1" ]]; then
-    log "Reclaiming base .tbl files in $DSS_PATH (loaded into DB; set KEEP_TBL=1 to retain)"
-    local _tbl freed=0
-    for _tbl in region nation part supplier partsupp customer orders lineitem; do
-      rm -f "$DSS_PATH/${_tbl}.tbl" 2>/dev/null && freed=1
-    done
-    [[ "$freed" == "1" ]] && log "Base .tbl files removed; refresh data (dss.*) retained"
-  else
-    log "KEEP_TBL=1 set; retaining base .tbl files in $DSS_PATH"
-  fi
 }
 
 # Copy the refresh artifacts into a scale-specific query dir:
@@ -528,9 +509,29 @@ main() {
   generate_queries
   copy_refresh_files "$(scale_query_dir)"
 
+  # Reclaim the whole generated data dir now that everything it held has been
+  # consumed: the base *.tbl were loaded into the DB by generate_and_load_data,
+  # and the refresh data (dss.ri.*/dss.rd.*/dss.nsets) was just copied into the
+  # scale query dir by copy_refresh_files -- which is where run_tests.sh reads
+  # RF1/RF2 data from, NOT from here. So $DSS_PATH is pure dead weight at this
+  # point (lineitem.tbl alone is ~74G at SF100), and on the 434G volume the base
+  # text + the loaded DB do not both fit. Set KEEP_TBL=1 to retain for debugging.
+  # NOTE: only the full-setup path deletes this; QUERIES_ONLY mode (which re-stages
+  # refresh data FROM $DSS_PATH) returns earlier and never reaches here.
+  if [[ "${KEEP_TBL:-0}" != "1" ]]; then
+    log "Reclaiming generated data dir $DSS_PATH (base .tbl loaded, refresh data staged into query dir; set KEEP_TBL=1 to retain)"
+    rm -rf "$DSS_PATH"
+  else
+    log "KEEP_TBL=1 set; retaining generated data dir $DSS_PATH"
+  fi
+
   log "All done!"
   log "DB: ${DB_NAME}  User: ${DB_USER}"
-  log "Data dir: ${DSS_PATH}"
+  if [[ -d "$DSS_PATH" ]]; then
+    log "Data dir: ${DSS_PATH}"
+  else
+    log "Data dir: ${DSS_PATH} (reclaimed; refresh data staged in query dir)"
+  fi
   log "Queries : $(scale_query_dir)"
 }
 
