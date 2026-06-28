@@ -1,0 +1,2 @@
+io_method,iteration,run_in_iteration,global_run_id,test_type,stream_count,measurement_interval_seconds,start_time,end_time
+bgworkers,1,1,1,THROUGHPUT,4,3843.862868774,1782391928.645712353,1782395772.508581127

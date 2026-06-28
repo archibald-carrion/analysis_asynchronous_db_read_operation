@@ -56,7 +56,8 @@ install_dependencies() {
         cmake \
         pkg-config \
         gnupg \
-        lsb-release
+        lsb-release \
+        bc
     
     log "System dependencies installed"
 }
