@@ -114,8 +114,8 @@ main() {
   for pair in "${SCALES[@]}"; do log "  ${pair%%:*} GB → ${pair#*:}"; done
   cleanup_results
   cleanup_databases
-  setup_databases
   generate_schedule
+  setup_databases
   run_experiment
   section "Fin. Revisa resultados en $RESULTS_DIR"
 }

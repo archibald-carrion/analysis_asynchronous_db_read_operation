@@ -39,9 +39,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 LOG_FILE="$SCRIPT_DIR/installation.log"
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-log(){ echo -e "${GREEN}[$(date '+%F %T')]${NC} $*" | tee -a "$LOG_FILE"; }
-warn(){ echo -e "${YELLOW}[$(date '+%F %T')] WARNING:${NC} $*" | tee -a "$LOG_FILE"; }
-err(){ echo -e "${RED}[$(date '+%F %T')] ERROR:${NC} $*" | tee -a "$LOG_FILE"; exit 1; }
+# Diagnostics go to stderr (via tee >&2) so they never contaminate a command
+# substitution that captures a function's stdout (e.g. RUNS=$(runs_for_this_db)).
+log(){ echo -e "${GREEN}[$(date '+%F %T')]${NC} $*" | tee -a "$LOG_FILE" >&2; }
+warn(){ echo -e "${YELLOW}[$(date '+%F %T')] WARNING:${NC} $*" | tee -a "$LOG_FILE" >&2; }
+err(){ echo -e "${RED}[$(date '+%F %T')] ERROR:${NC} $*" | tee -a "$LOG_FILE" >&2; exit 1; }
 
 # ---- Repo PGDG: asegurar UNA sola fuente Deb822 y UN solo Signed-By ----
 ensure_pgdg_repo() {
