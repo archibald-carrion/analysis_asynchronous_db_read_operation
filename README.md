@@ -4,7 +4,6 @@ Research project benchmarking **PostgreSQL 18 I/O methods** with a TPC-H–deriv
 The experiment compares three read-path configurations and measures their effect on the
 TPC-H **QphH** metric across several database sizes.
 
-- **Paper:** `paper/main.tex`
 - **Experiment code:** `proof_of_concept/`
 - **TPC-H compliance audit:** `proof_of_concept/readme/TPCH_COMPLIANCE.md`
 - **Target runtime:** Linux VM with PostgreSQL 18.
@@ -73,8 +72,7 @@ flowchart TD
 
 | Path | Purpose |
 |---|---|
-| `paper/` | LaTeX source of the paper (out of scope for code changes) |
 | `proof_of_concept/` | Experiment scripts, TPC-H queries, results |
 | `proof_of_concept/tpch_queries/` | qgen Q1–Q22 + refresh functions |
 | `proof_of_concept/legacy/` | Archived/superseded scripts (not part of the live flow) |
-| `drawings/` | Figure-generation scripts for the paper |
+| `drawings/` | Figure-generation scripts|
