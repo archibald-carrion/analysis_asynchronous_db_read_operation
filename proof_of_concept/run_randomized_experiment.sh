@@ -201,8 +201,26 @@ switch_database() {
 
     info "Switching to database: $db_name"
 
-    # Verify database exists
-    if ! sudo -u postgres psql -lqt | cut -d \| -f 1 | grep -qw "$db_name"; then
+    # Distinguish "server not reachable" from "DB genuinely missing".
+    # i.e. the postmaster could not fork() a backend for the connection.
+    # The old check then ran `psql -lqt`, got empty output because the
+    # connection itself failed, and wrongly concluded the DB "does not
+    # exist" (verified false: the DB was present). Whatever transiently
+    # blocks the fork (kernel/cgroup process limit, etc.), the correct
+    # behaviour is to probe the server with a bounded retry first and only
+    # claim the DB is missing after the server actually answers.
+    local retries=0
+    until sudo -u postgres psql -tAc "SELECT 1;" >/dev/null 2>&1; do
+        retries=$((retries + 1))
+        if [[ $retries -gt 15 ]]; then
+            error "PostgreSQL is not accepting connections (server down or out of process/cgroup resources); aborting switch to $db_name"
+        fi
+        warning "PostgreSQL connect failed (attempt $retries/15) — likely a transient fork/cgroup limit; retrying in 4s..."
+        sleep 4
+    done
+
+    # Server is reachable — now a missing DB is a real error.
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname = '$db_name';" | grep -q 1; then
         error "Database $db_name does not exist"
     fi
 
